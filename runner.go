@@ -2,15 +2,12 @@ package monty
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/ewhauser/gomonty/internal/ffi"
 )
-
-const wireVersion = 1
 
 var (
 	// ErrClosed reports that a handle-backed object no longer owns a native handle.
@@ -87,82 +84,9 @@ type progressBase struct {
 	isRepl     bool
 }
 
-type compileOptionsPayload struct {
-	Version        uint32   `json:"version"`
-	ScriptName     *string  `json:"script_name,omitempty"`
-	Inputs         []string `json:"inputs,omitempty"`
-	TypeCheck      bool     `json:"type_check,omitempty"`
-	TypeCheckStubs *string  `json:"type_check_stubs,omitempty"`
-}
-
-type resourceLimitsPayload struct {
-	Version           uint32   `json:"version"`
-	MaxAllocations    *int     `json:"max_allocations,omitempty"`
-	MaxDurationSecs   *float64 `json:"max_duration_secs,omitempty"`
-	MaxMemory         *int     `json:"max_memory,omitempty"`
-	GCInterval        *int     `json:"gc_interval,omitempty"`
-	MaxRecursionDepth *int     `json:"max_recursion_depth,omitempty"`
-}
-
-type startOptionsPayload struct {
-	Version uint32                 `json:"version"`
-	Inputs  map[string]Value       `json:"inputs,omitempty"`
-	Limits  *resourceLimitsPayload `json:"limits,omitempty"`
-}
-
-type replOptionsPayload struct {
-	Version    uint32                 `json:"version"`
-	ScriptName *string                `json:"script_name,omitempty"`
-	Limits     *resourceLimitsPayload `json:"limits,omitempty"`
-}
-
-type feedOptionsPayload struct {
-	Version uint32           `json:"version"`
-	Inputs  map[string]Value `json:"inputs,omitempty"`
-}
-
-type callResultPayload struct {
-	Kind  string  `json:"kind"`
-	Value Value   `json:"value,omitempty"`
-	Type  string  `json:"exc_type,omitempty"`
-	Arg   *string `json:"arg,omitempty"`
-}
-
-type lookupResultPayload struct {
-	Kind  string `json:"kind"`
-	Value Value  `json:"value,omitempty"`
-}
-
-type futureResultsPayload struct {
-	Version uint32                       `json:"version"`
-	Results map[uint32]callResultPayload `json:"results"`
-}
-
-type progressDescription struct {
-	Variant        string   `json:"variant"`
-	Version        uint32   `json:"version"`
-	ScriptName     string   `json:"script_name"`
-	IsRepl         bool     `json:"is_repl"`
-	IsOSFunction   bool     `json:"is_os_function"`
-	IsMethodCall   bool     `json:"is_method_call"`
-	FunctionName   string   `json:"function_name"`
-	Args           []Value  `json:"args"`
-	Kwargs         Dict     `json:"kwargs"`
-	CallID         uint32   `json:"call_id"`
-	VariableName   string   `json:"variable_name"`
-	PendingCallIDs []uint32 `json:"pending_call_ids"`
-	Output         Value    `json:"output"`
-}
-
 // New compiles Monty code into a reusable runner.
 func New(code string, opts CompileOptions) (*Runner, error) {
-	payload, err := marshalJSON(compileOptionsPayload{
-		Version:        wireVersion,
-		ScriptName:     optionalString(opts.ScriptName),
-		Inputs:         opts.Inputs,
-		TypeCheck:      opts.TypeCheck,
-		TypeCheckStubs: optionalString(opts.TypeCheckStubs),
-	})
+	payload, err := marshalWire(newWireCompileOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +117,7 @@ func LoadSnapshot(data []byte) (Progress, error) {
 	if result.Error != nil {
 		return nil, newError(result.Error)
 	}
-	return progressFromHandle(result.Progress, nil)
+	return progressFromResult(result.Progress, result.ProgressPayload, nil)
 }
 
 // LoadReplSnapshot restores a serialized REPL snapshot and also returns a base
@@ -220,7 +144,7 @@ func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
 	}
 	owner.state.restore(replResult.Repl)
 
-	progress, err := progressFromHandle(primary.Progress, owner.state)
+	progress, err := progressFromResult(primary.Progress, primary.ProgressPayload, owner.state)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -229,11 +153,7 @@ func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
 
 // NewRepl constructs an empty REPL session.
 func NewRepl(opts ReplOptions) (*Repl, error) {
-	payload, err := marshalJSON(replOptionsPayload{
-		Version:    wireVersion,
-		ScriptName: optionalString(opts.ScriptName),
-		Limits:     encodeResourceLimits(opts.Limits),
-	})
+	payload, err := marshalWire(newWireReplOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -287,11 +207,12 @@ func (r *Runner) Start(ctx context.Context, opts StartOptions) (Progress, error)
 	}
 	defer release()
 
-	payload, err := marshalJSON(startOptionsPayload{
-		Version: wireVersion,
-		Inputs:  cloneValueMap(opts.Inputs),
-		Limits:  encodeResourceLimits(opts.Limits),
-	})
+	wireOptions, err := newWireStartOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := marshalWire(wireOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -341,10 +262,12 @@ func (r *Repl) FeedStart(ctx context.Context, code string, opts FeedStartOptions
 		return nil, err
 	}
 
-	payload, err := marshalJSON(feedOptionsPayload{
-		Version: wireVersion,
-		Inputs:  cloneValueMap(opts.Inputs),
-	})
+	wireOptions, err := newWireFeedOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := marshalWire(wireOptions)
 	if err != nil {
 		r.state.restore(handle)
 		return nil, err
@@ -389,10 +312,12 @@ func (s *FutureSnapshot) Dump() ([]byte, error) {
 
 // ResumeReturn resumes a function or OS snapshot with a return value.
 func (s *Snapshot) ResumeReturn(ctx context.Context, value Value) (Progress, error) {
-	payload, err := marshalJSON(callResultPayload{
-		Kind:  "return",
-		Value: value,
-	})
+	wireResult, err := newWireCallResult(Return(value))
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := marshalWire(wireResult)
 	if err != nil {
 		return nil, err
 	}
@@ -401,11 +326,12 @@ func (s *Snapshot) ResumeReturn(ctx context.Context, value Value) (Progress, err
 
 // ResumeException resumes a function or OS snapshot by raising an exception.
 func (s *Snapshot) ResumeException(ctx context.Context, exception Exception) (Progress, error) {
-	payload, err := marshalJSON(callResultPayload{
-		Kind: "exception",
-		Type: exception.Type,
-		Arg:  exception.Arg,
-	})
+	wireResult, err := newWireCallResult(Raise(exception))
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := marshalWire(wireResult)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +340,7 @@ func (s *Snapshot) ResumeException(ctx context.Context, exception Exception) (Pr
 
 // ResumePending resumes a function or OS snapshot with a pending future.
 func (s *Snapshot) ResumePending(ctx context.Context) (Progress, error) {
-	payload, err := marshalJSON(callResultPayload{Kind: "pending"})
+	payload, err := marshalWire(wireCallResult{Kind: wireCallResultPending})
 	if err != nil {
 		return nil, err
 	}
@@ -423,10 +349,12 @@ func (s *Snapshot) ResumePending(ctx context.Context) (Progress, error) {
 
 // ResumeValue resumes a name lookup with a resolved value.
 func (s *NameLookupSnapshot) ResumeValue(ctx context.Context, value Value) (Progress, error) {
-	payload, err := marshalJSON(lookupResultPayload{
-		Kind:  "value",
-		Value: value,
-	})
+	wireResult, err := newWireLookupResult(value)
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := marshalWire(wireResult)
 	if err != nil {
 		return nil, err
 	}
@@ -435,7 +363,7 @@ func (s *NameLookupSnapshot) ResumeValue(ctx context.Context, value Value) (Prog
 
 // ResumeUndefined resumes a name lookup as undefined.
 func (s *NameLookupSnapshot) ResumeUndefined(ctx context.Context) (Progress, error) {
-	payload, err := marshalJSON(lookupResultPayload{Kind: "undefined"})
+	payload, err := marshalWire(wireLookupResult{Kind: wireLookupResultUndefined})
 	if err != nil {
 		return nil, err
 	}
@@ -449,29 +377,12 @@ func (s *FutureSnapshot) PendingCallIDs() []uint32 {
 
 // ResumeResults resumes a future snapshot with zero or more resolved call IDs.
 func (s *FutureSnapshot) ResumeResults(ctx context.Context, results map[uint32]Result) (Progress, error) {
-	wireResults := make(map[uint32]callResultPayload, len(results))
-	for callID, result := range results {
-		switch {
-		case result.wirePending():
-			wireResults[callID] = callResultPayload{Kind: "pending"}
-		case result.wireException() != nil:
-			exception := result.wireException()
-			wireResults[callID] = callResultPayload{
-				Kind: "exception",
-				Type: exception.Type,
-				Arg:  exception.Arg,
-			}
-		default:
-			wireResults[callID] = callResultPayload{
-				Kind:  "return",
-				Value: result.wireValue(),
-			}
-		}
+	wireResults, err := newWireFutureResults(results)
+	if err != nil {
+		return nil, err
 	}
-	payload, err := marshalJSON(futureResultsPayload{
-		Version: wireVersion,
-		Results: wireResults,
-	})
+
+	payload, err := marshalWire(wireResults)
 	if err != nil {
 		return nil, err
 	}
@@ -700,21 +611,20 @@ func consumeOpResult(result ffi.OpResult, owner *replState, print PrintCallback)
 		return nil, fmt.Errorf("monty ffi returned no progress handle")
 	}
 
-	return progressFromHandle(result.Progress, owner)
+	return progressFromResult(result.Progress, result.ProgressPayload, owner)
 }
 
-func progressFromHandle(handle *ffi.Progress, owner *replState) (Progress, error) {
-	bytes, ffiErr := handle.Describe()
-	if ffiErr != nil {
+func progressFromResult(handle *ffi.Progress, payload []byte, owner *replState) (Progress, error) {
+	if len(payload) == 0 {
 		handle.Close()
 		if owner != nil {
 			owner.clear()
 		}
-		return nil, newError(ffiErr)
+		return nil, fmt.Errorf("monty ffi returned no progress payload")
 	}
 
-	var desc progressDescription
-	if err := json.Unmarshal(bytes, &desc); err != nil {
+	var desc wireProgressPayload
+	if err := unmarshalWire(payload, &desc); err != nil {
 		handle.Close()
 		if owner != nil {
 			owner.clear()
@@ -733,27 +643,58 @@ func progressFromHandle(handle *ffi.Progress, owner *replState) (Progress, error
 	}
 
 	switch desc.Variant {
-	case "function_call":
+	case wireProgressFunctionCall:
+		args, err := valuesFromWire(desc.Args)
+		if err != nil {
+			handle.Close()
+			if owner != nil {
+				owner.clear()
+			}
+			return nil, err
+		}
+		kwargs, err := dictFromWirePairs(desc.Kwargs)
+		if err != nil {
+			handle.Close()
+			if owner != nil {
+				owner.clear()
+			}
+			return nil, err
+		}
 		return &Snapshot{
 			progressBase: base,
 			FunctionName: desc.FunctionName,
-			Args:         desc.Args,
-			Kwargs:       desc.Kwargs,
+			Args:         args,
+			Kwargs:       kwargs,
 			CallID:       desc.CallID,
 			IsOSFunction: desc.IsOSFunction,
 			IsMethodCall: desc.IsMethodCall,
 		}, nil
-	case "name_lookup":
+	case wireProgressNameLookup:
 		return &NameLookupSnapshot{
 			progressBase: base,
 			VariableName: desc.VariableName,
 		}, nil
-	case "future":
+	case wireProgressFuture:
 		return &FutureSnapshot{
 			progressBase:   base,
 			pendingCallIDs: append([]uint32(nil), desc.PendingCallIDs...),
 		}, nil
-	case "complete":
+	case wireProgressComplete:
+		if desc.Output == nil {
+			handle.Close()
+			if owner != nil {
+				owner.clear()
+			}
+			return nil, fmt.Errorf("complete progress payload is missing output")
+		}
+		output, err := desc.Output.toPublic()
+		if err != nil {
+			handle.Close()
+			if owner != nil {
+				owner.clear()
+			}
+			return nil, err
+		}
 		if owner != nil {
 			result := handle.TakeRepl()
 			handle.Close()
@@ -768,7 +709,7 @@ func progressFromHandle(handle *ffi.Progress, owner *replState) (Progress, error
 			state.handle = nil
 		}
 		return &Complete{
-			Output:     desc.Output,
+			Output:     output,
 			ScriptName: desc.ScriptName,
 			IsRepl:     desc.IsRepl,
 		}, nil
@@ -779,21 +720,6 @@ func progressFromHandle(handle *ffi.Progress, owner *replState) (Progress, error
 		}
 		return nil, fmt.Errorf("unknown progress variant %q", desc.Variant)
 	}
-}
-
-func marshalJSON(value any) ([]byte, error) {
-	return json.Marshal(value)
-}
-
-func cloneValueMap(values map[string]Value) map[string]Value {
-	if len(values) == 0 {
-		return nil
-	}
-	cloned := make(map[string]Value, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
-	return cloned
 }
 
 func optionalString(value string) *string {
@@ -808,22 +734,4 @@ func optionalInt(value int) *int {
 		return nil
 	}
 	return &value
-}
-
-func encodeResourceLimits(limits *ResourceLimits) *resourceLimitsPayload {
-	if limits == nil {
-		return nil
-	}
-	payload := &resourceLimitsPayload{
-		Version:           wireVersion,
-		MaxAllocations:    optionalInt(limits.MaxAllocations),
-		MaxMemory:         optionalInt(limits.MaxMemory),
-		GCInterval:        optionalInt(limits.GCInterval),
-		MaxRecursionDepth: optionalInt(limits.MaxRecursionDepth),
-	}
-	if limits.MaxDuration > 0 {
-		seconds := limits.MaxDuration.Seconds()
-		payload.MaxDurationSecs = &seconds
-	}
-	return payload
 }

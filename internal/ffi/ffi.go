@@ -48,10 +48,11 @@ type ReplResult struct {
 
 // OpResult wraps start/resume/feed operations.
 type OpResult struct {
-	Progress *Progress
-	Repl     *Repl
-	Error    *Error
-	Prints   string
+	Progress        *Progress
+	ProgressPayload []byte
+	Repl            *Repl
+	Error           *Error
+	Prints          string
 }
 
 func newRunner(ptr *C.MontyGoRunner) *Runner {
@@ -106,10 +107,11 @@ func replResultFromC(result C.MontyGoReplResult) ReplResult {
 
 func opResultFromC(result C.MontyGoOpResult) OpResult {
 	return OpResult{
-		Progress: newProgress(result.progress),
-		Repl:     newRepl(result.repl),
-		Error:    newError(result.error),
-		Prints:   string(takeBytes(result.prints)),
+		Progress:        newProgress(result.progress),
+		ProgressPayload: takeBytes(result.progress_payload),
+		Repl:            newRepl(result.repl),
+		Error:           newError(result.error),
+		Prints:          string(takeBytes(result.prints)),
 	}
 }
 

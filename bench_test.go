@@ -63,6 +63,44 @@ const benchEmptyTuples = "len([() for _ in range(100_000)])"
 
 const benchPairTuples = "len([(i, i + 1) for i in range(100_000)])"
 
+const benchExternalLoop = `
+def run():
+    total = 0
+    for _ in range(100):
+        total += host_value()
+    return total
+
+run()
+`
+
+const benchExternalKwargsLoop = `
+def run():
+    total = 0
+    for i in range(100):
+        total += host_add(a=i, b=1)
+    return total
+
+run()
+`
+
+const benchOSLoop = `
+from pathlib import Path
+
+def run():
+    total = 0
+    for _ in range(100):
+        total += 1 if Path('/bench.txt').exists() else 0
+    return total
+
+run()
+`
+
+const benchNameLookup = "target"
+
+const benchCallSnapshot = `
+target()
+`
+
 //go:embed testdata/bench_kitchen_sink.py
 var benchKitchenSink string
 
@@ -90,7 +128,7 @@ var benchmarkCases = []benchmarkCase{
 func BenchmarkMonty(b *testing.B) {
 	for _, tc := range benchmarkCases {
 		b.Run(tc.name, func(b *testing.B) {
-			benchmarkCompiledRunner(b, tc.code, tc.expected)
+			benchmarkCompiledRunner(b, tc.code, tc.expected, RunOptions{})
 		})
 	}
 }
@@ -99,7 +137,291 @@ func BenchmarkMontyEndToEnd(b *testing.B) {
 	benchmarkEndToEnd(b, benchAddTwo, 3)
 }
 
-func benchmarkCompiledRunner(b *testing.B, code string, expected int64) {
+func BenchmarkMontyCallbacks(b *testing.B) {
+	b.Run("external_loop", func(b *testing.B) {
+		benchmarkCompiledRunner(b, benchExternalLoop, 100, RunOptions{
+			Functions: map[string]ExternalFunction{
+				"host_value": func(context.Context, Call) (Result, error) {
+					return Return(Int(1)), nil
+				},
+			},
+		})
+	})
+
+	b.Run("external_kwargs_loop", func(b *testing.B) {
+		benchmarkCompiledRunner(b, benchExternalKwargsLoop, 5050, RunOptions{
+			Functions: map[string]ExternalFunction{
+				"host_add": func(_ context.Context, call Call) (Result, error) {
+					var lhs int64
+					var rhs int64
+					for _, item := range call.Kwargs {
+						switch item.Key.Raw().(string) {
+						case "a":
+							lhs = item.Value.Raw().(int64)
+						case "b":
+							rhs = item.Value.Raw().(int64)
+						}
+					}
+					return Return(Int(lhs + rhs)), nil
+				},
+			},
+		})
+	})
+
+	b.Run("os_loop", func(b *testing.B) {
+		benchmarkCompiledRunner(b, benchOSLoop, 100, RunOptions{
+			OS: func(_ context.Context, call OSCall) (Result, error) {
+				if call.Function != OSPathExists {
+					b.Fatalf("unexpected OS function: %s", call.Function)
+				}
+				return Return(Bool(true)), nil
+			},
+		})
+	})
+}
+
+func BenchmarkMontyDecompose(b *testing.B) {
+	b.Run("compile_only", func(b *testing.B) {
+		ctx := context.Background()
+
+		verifyRunner, err := New(benchAddTwo, CompileOptions{ScriptName: benchScriptName})
+		if err != nil {
+			b.Fatalf("New: %v", err)
+		}
+		assertBenchmarkResult(b, verifyRunner, ctx, 3, RunOptions{})
+		closeTestRunner(verifyRunner)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			runner, err := New(benchAddTwo, CompileOptions{ScriptName: benchScriptName})
+			if err != nil {
+				b.Fatalf("New: %v", err)
+			}
+			closeTestRunner(runner)
+		}
+	})
+
+	b.Run("dump_load_runner", func(b *testing.B) {
+		runner, err := New(benchListAppendInt, CompileOptions{ScriptName: benchScriptName})
+		if err != nil {
+			b.Fatalf("New: %v", err)
+		}
+		b.Cleanup(func() {
+			closeTestRunner(runner)
+		})
+
+		dump, err := runner.Dump()
+		if err != nil {
+			b.Fatalf("Dump: %v", err)
+		}
+
+		loaded, err := LoadRunner(dump)
+		if err != nil {
+			b.Fatalf("LoadRunner: %v", err)
+		}
+		closeTestRunner(loaded)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			loaded, err := LoadRunner(dump)
+			if err != nil {
+				b.Fatalf("LoadRunner: %v", err)
+			}
+			closeTestRunner(loaded)
+		}
+	})
+
+	b.Run("start_to_first_progress", func(b *testing.B) {
+		runner, err := New(benchCallSnapshot, CompileOptions{ScriptName: benchScriptName})
+		if err != nil {
+			b.Fatalf("New: %v", err)
+		}
+		b.Cleanup(func() {
+			closeTestRunner(runner)
+		})
+
+		ctx := context.Background()
+		progress, err := runner.Start(ctx, StartOptions{})
+		if err != nil {
+			b.Fatalf("Start: %v", err)
+		}
+		if _, ok := progress.(*Snapshot); !ok {
+			closeTestProgress(progress)
+			b.Fatalf("unexpected progress type %T", progress)
+		}
+		closeTestProgress(progress)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			progress, err := runner.Start(ctx, StartOptions{})
+			if err != nil {
+				b.Fatalf("Start: %v", err)
+			}
+			if _, ok := progress.(*Snapshot); !ok {
+				closeTestProgress(progress)
+				b.Fatalf("unexpected progress type %T", progress)
+			}
+			closeTestProgress(progress)
+		}
+	})
+
+	b.Run("resolved_name_lookup", func(b *testing.B) {
+		snapshot := prepareNameLookupSnapshot(b, benchNameLookup)
+		ctx := context.Background()
+
+		progress, err := LoadSnapshot(snapshot)
+		if err != nil {
+			b.Fatalf("LoadSnapshot: %v", err)
+		}
+		nameLookup, ok := progress.(*NameLookupSnapshot)
+		if !ok {
+			closeTestProgress(progress)
+			b.Fatalf("unexpected progress type %T", progress)
+		}
+		complete, err := nameLookup.ResumeValue(ctx, Int(42))
+		if err != nil {
+			b.Fatalf("ResumeValue: %v", err)
+		}
+		assertCompleteInt(b, complete, 42)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			progress, err := LoadSnapshot(snapshot)
+			if err != nil {
+				b.Fatalf("LoadSnapshot: %v", err)
+			}
+			nameLookup, ok := progress.(*NameLookupSnapshot)
+			if !ok {
+				closeTestProgress(progress)
+				b.Fatalf("unexpected progress type %T", progress)
+			}
+			complete, err := nameLookup.ResumeValue(ctx, Int(42))
+			if err != nil {
+				b.Fatalf("ResumeValue: %v", err)
+			}
+			assertCompleteInt(b, complete, 42)
+		}
+	})
+
+	b.Run("unresolved_name_lookup", func(b *testing.B) {
+		snapshot := prepareNameLookupSnapshot(b, benchNameLookup)
+		ctx := context.Background()
+
+		progress, err := LoadSnapshot(snapshot)
+		if err != nil {
+			b.Fatalf("LoadSnapshot: %v", err)
+		}
+		nameLookup, ok := progress.(*NameLookupSnapshot)
+		if !ok {
+			closeTestProgress(progress)
+			b.Fatalf("unexpected progress type %T", progress)
+		}
+		if _, err := nameLookup.ResumeUndefined(ctx); err == nil {
+			b.Fatal("ResumeUndefined: expected error")
+		}
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			progress, err := LoadSnapshot(snapshot)
+			if err != nil {
+				b.Fatalf("LoadSnapshot: %v", err)
+			}
+			nameLookup, ok := progress.(*NameLookupSnapshot)
+			if !ok {
+				closeTestProgress(progress)
+				b.Fatalf("unexpected progress type %T", progress)
+			}
+			if _, err := nameLookup.ResumeUndefined(ctx); err == nil {
+				b.Fatal("ResumeUndefined: expected error")
+			}
+		}
+	})
+
+	b.Run("resume_call_complete", func(b *testing.B) {
+		snapshot := prepareCallSnapshot(b)
+		ctx := context.Background()
+
+		progress, err := LoadSnapshot(snapshot)
+		if err != nil {
+			b.Fatalf("LoadSnapshot: %v", err)
+		}
+		callSnapshot, ok := progress.(*Snapshot)
+		if !ok {
+			closeTestProgress(progress)
+			b.Fatalf("unexpected progress type %T", progress)
+		}
+		complete, err := callSnapshot.ResumeReturn(ctx, Int(42))
+		if err != nil {
+			b.Fatalf("ResumeReturn: %v", err)
+		}
+		assertCompleteInt(b, complete, 42)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			progress, err := LoadSnapshot(snapshot)
+			if err != nil {
+				b.Fatalf("LoadSnapshot: %v", err)
+			}
+			callSnapshot, ok := progress.(*Snapshot)
+			if !ok {
+				closeTestProgress(progress)
+				b.Fatalf("unexpected progress type %T", progress)
+			}
+			complete, err := callSnapshot.ResumeReturn(ctx, Int(42))
+			if err != nil {
+				b.Fatalf("ResumeReturn: %v", err)
+			}
+			assertCompleteInt(b, complete, 42)
+		}
+	})
+
+	b.Run("resume_pending", func(b *testing.B) {
+		snapshot := prepareCallSnapshot(b)
+		ctx := context.Background()
+
+		progress, err := LoadSnapshot(snapshot)
+		if err != nil {
+			b.Fatalf("LoadSnapshot: %v", err)
+		}
+		callSnapshot, ok := progress.(*Snapshot)
+		if !ok {
+			closeTestProgress(progress)
+			b.Fatalf("unexpected progress type %T", progress)
+		}
+		pending, err := callSnapshot.ResumePending(ctx)
+		if err != nil {
+			b.Fatalf("ResumePending: %v", err)
+		}
+		closeTestProgress(pending)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			progress, err := LoadSnapshot(snapshot)
+			if err != nil {
+				b.Fatalf("LoadSnapshot: %v", err)
+			}
+			callSnapshot, ok := progress.(*Snapshot)
+			if !ok {
+				closeTestProgress(progress)
+				b.Fatalf("unexpected progress type %T", progress)
+			}
+			pending, err := callSnapshot.ResumePending(ctx)
+			if err != nil {
+				b.Fatalf("ResumePending: %v", err)
+			}
+			closeTestProgress(pending)
+		}
+	})
+}
+
+func benchmarkCompiledRunner(b *testing.B, code string, expected int64, opts RunOptions) {
 	b.Helper()
 
 	runner, err := New(code, CompileOptions{ScriptName: benchScriptName})
@@ -111,12 +433,12 @@ func benchmarkCompiledRunner(b *testing.B, code string, expected int64) {
 	})
 
 	ctx := context.Background()
-	assertBenchmarkResult(b, runner, ctx, expected)
+	assertBenchmarkResult(b, runner, ctx, expected, opts)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		assertBenchmarkResult(b, runner, ctx, expected)
+		assertBenchmarkResult(b, runner, ctx, expected, opts)
 	}
 }
 
@@ -128,7 +450,7 @@ func benchmarkEndToEnd(b *testing.B, code string, expected int64) {
 	if err != nil {
 		b.Fatalf("New: %v", err)
 	}
-	assertBenchmarkResult(b, verifyRunner, ctx, expected)
+	assertBenchmarkResult(b, verifyRunner, ctx, expected, RunOptions{})
 	closeTestRunner(verifyRunner)
 
 	b.ReportAllocs()
@@ -138,19 +460,91 @@ func benchmarkEndToEnd(b *testing.B, code string, expected int64) {
 		if err != nil {
 			b.Fatalf("New: %v", err)
 		}
-		assertBenchmarkResult(b, runner, ctx, expected)
+		assertBenchmarkResult(b, runner, ctx, expected, RunOptions{})
 		closeTestRunner(runner)
 	}
 }
 
-func assertBenchmarkResult(b *testing.B, runner *Runner, ctx context.Context, expected int64) {
+func prepareNameLookupSnapshot(b *testing.B, code string) []byte {
 	b.Helper()
 
-	value, err := runner.Run(ctx, RunOptions{})
+	runner, err := New(code, CompileOptions{ScriptName: benchScriptName})
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer closeTestRunner(runner)
+
+	progress, err := runner.Start(context.Background(), StartOptions{})
+	if err != nil {
+		b.Fatalf("Start: %v", err)
+	}
+
+	nameLookup, ok := progress.(*NameLookupSnapshot)
+	if !ok {
+		closeTestProgress(progress)
+		b.Fatalf("unexpected progress type %T", progress)
+	}
+
+	dump, err := nameLookup.Dump()
+	if err != nil {
+		closeTestProgress(progress)
+		b.Fatalf("Dump: %v", err)
+	}
+	closeTestProgress(progress)
+	return dump
+}
+
+func prepareCallSnapshot(b *testing.B) []byte {
+	b.Helper()
+
+	runner, err := New(benchCallSnapshot, CompileOptions{ScriptName: benchScriptName})
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer closeTestRunner(runner)
+
+	ctx := context.Background()
+	progress, err := runner.Start(ctx, StartOptions{})
+	if err != nil {
+		b.Fatalf("Start: %v", err)
+	}
+
+	snapshot, ok := progress.(*Snapshot)
+	if !ok {
+		closeTestProgress(progress)
+		b.Fatalf("unexpected progress type %T", progress)
+	}
+
+	dump, err := snapshot.Dump()
+	if err != nil {
+		closeTestProgress(progress)
+		b.Fatalf("Dump: %v", err)
+	}
+	closeTestProgress(progress)
+	return dump
+}
+
+func assertBenchmarkResult(b *testing.B, runner *Runner, ctx context.Context, expected int64, opts RunOptions) {
+	b.Helper()
+
+	value, err := runner.Run(ctx, opts)
 	if err != nil {
 		b.Fatalf("Run: %v", err)
 	}
 	if got := benchmarkInt64(b, value); got != expected {
+		b.Fatalf("unexpected result: got %d want %d", got, expected)
+	}
+}
+
+func assertCompleteInt(b *testing.B, progress Progress, expected int64) {
+	b.Helper()
+
+	complete, ok := progress.(*Complete)
+	if !ok {
+		closeTestProgress(progress)
+		b.Fatalf("unexpected progress type %T", progress)
+	}
+	if got := benchmarkInt64(b, complete.Output); got != expected {
 		b.Fatalf("unexpected result: got %d want %d", got, expected)
 	}
 }

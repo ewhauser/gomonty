@@ -34,10 +34,11 @@ type ReplResult struct {
 
 // OpResult wraps start/resume/feed operations.
 type OpResult struct {
-	Progress *Progress
-	Repl     *Repl
-	Error    *Error
-	Prints   string
+	Progress        *Progress
+	ProgressPayload []byte
+	Repl            *Repl
+	Error           *Error
+	Prints          string
 }
 
 func unavailableError() *Error {

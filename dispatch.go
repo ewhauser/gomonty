@@ -226,7 +226,11 @@ func restoreProgressOwner(progress Progress, err error) error {
 }
 
 func mustMarshalCallResult(payload callResultPayload) []byte {
-	bytes, err := marshalJSON(payload)
+	wireResult, err := payload.toWire()
+	if err != nil {
+		panic(err)
+	}
+	bytes, err := marshalWire(wireResult)
 	if err != nil {
 		panic(err)
 	}
@@ -234,7 +238,11 @@ func mustMarshalCallResult(payload callResultPayload) []byte {
 }
 
 func mustMarshalLookupResult(payload lookupResultPayload) []byte {
-	bytes, err := marshalJSON(payload)
+	wireResult, err := payload.toWire()
+	if err != nil {
+		panic(err)
+	}
+	bytes, err := marshalWire(wireResult)
 	if err != nil {
 		panic(err)
 	}
@@ -242,29 +250,11 @@ func mustMarshalLookupResult(payload lookupResultPayload) []byte {
 }
 
 func mustMarshalFutureResults(results map[uint32]Result) []byte {
-	payload := futureResultsPayload{
-		Version: wireVersion,
-		Results: make(map[uint32]callResultPayload, len(results)),
+	payload, err := newWireFutureResults(results)
+	if err != nil {
+		panic(err)
 	}
-	for callID, result := range results {
-		switch {
-		case result.wirePending():
-			payload.Results[callID] = callResultPayload{Kind: "pending"}
-		case result.wireException() != nil:
-			exception := result.wireException()
-			payload.Results[callID] = callResultPayload{
-				Kind: "exception",
-				Type: exception.Type,
-				Arg:  exception.Arg,
-			}
-		default:
-			payload.Results[callID] = callResultPayload{
-				Kind:  "return",
-				Value: result.wireValue(),
-			}
-		}
-	}
-	bytes, err := marshalJSON(payload)
+	bytes, err := marshalWire(payload)
 	if err != nil {
 		panic(err)
 	}
