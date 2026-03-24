@@ -17,6 +17,7 @@ Tagged source trees must already contain the native archives required by the cur
 
 - `*.go`, `vfs/`, `internal/ffi/`: copied Go bindings adapted to the root module layout
 - [`go/README.md`](./go/README.md): consumer-facing Go API notes and examples carried over from the source repo
+- `examples/`: standalone example module for local consumption examples
 - `crates/monty-go-ffi/`: copied Rust C ABI crate
 - `scripts/build-go-ffi.sh <target-triple>`: builds one target archive into `internal/ffi/lib/...`
 
@@ -86,8 +87,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println(value.Raw())
+fmt.Println(value.Raw())
 }
+```
+
+The same example lives in [`examples/cmd/example`](./examples/cmd/example). To run it from this repo checkout:
+
+```bash
+cd examples
+go run ./cmd/example
 ```
 
 If you are consuming a branch, local checkout, or unreleased commit instead of a
