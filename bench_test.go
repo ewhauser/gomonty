@@ -107,7 +107,7 @@ func benchmarkCompiledRunner(b *testing.B, code string, expected int64) {
 		b.Fatalf("New: %v", err)
 	}
 	b.Cleanup(func() {
-		closeBenchmarkRunner(runner)
+		closeTestRunner(runner)
 	})
 
 	ctx := context.Background()
@@ -129,7 +129,7 @@ func benchmarkEndToEnd(b *testing.B, code string, expected int64) {
 		b.Fatalf("New: %v", err)
 	}
 	assertBenchmarkResult(b, verifyRunner, ctx, expected)
-	closeBenchmarkRunner(verifyRunner)
+	closeTestRunner(verifyRunner)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -139,7 +139,7 @@ func benchmarkEndToEnd(b *testing.B, code string, expected int64) {
 			b.Fatalf("New: %v", err)
 		}
 		assertBenchmarkResult(b, runner, ctx, expected)
-		closeBenchmarkRunner(runner)
+		closeTestRunner(runner)
 	}
 }
 
@@ -170,20 +170,5 @@ func benchmarkInt64(b *testing.B, value Value) int64 {
 	default:
 		b.Fatalf("unexpected result kind: %s", value.Kind())
 		return 0
-	}
-}
-
-func closeBenchmarkRunner(runner *Runner) {
-	if runner == nil || runner.state == nil {
-		return
-	}
-
-	runner.state.mu.Lock()
-	handle := runner.state.handle
-	runner.state.handle = nil
-	runner.state.mu.Unlock()
-
-	if handle != nil {
-		handle.Close()
 	}
 }

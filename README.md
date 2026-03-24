@@ -158,6 +158,25 @@ measured from `gomonty` `83788efac34f-dirty` against upstream Monty
 These numbers are host-specific. They compare the same benchmark scripts, but
 the Go side uses `testing.B` while upstream uses Criterion.
 
+## Fuzzing
+
+The repo also includes Go fuzz targets for:
+
+- `FuzzValueJSON`: pure-Go value wire-format decoding and normalization
+- `FuzzCompileAndRun`: arbitrary source strings compiled and executed with tight resource limits
+- `FuzzLoadRunner`: arbitrary bytes fed through `LoadRunner`, including valid dumped-runner seeds
+
+Run a short fuzzing pass with:
+
+```bash
+go test -run '^$' -fuzz FuzzValueJSON -fuzztime=10s .
+go test -run '^$' -fuzz FuzzCompileAndRun -fuzztime=10s .
+go test -run '^$' -fuzz FuzzLoadRunner -fuzztime=10s .
+```
+
+The native runner fuzzers require a cgo-enabled build for the current host
+archive, while `FuzzValueJSON` is pure Go.
+
 ## Upstream Overrides
 
 The default build uses pinned git dependencies on `https://github.com/pydantic/monty.git`. For local development against a sibling checkout, you can temporarily override them with a Cargo patch:

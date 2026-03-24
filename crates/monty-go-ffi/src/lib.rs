@@ -8,20 +8,24 @@
 mod wire;
 
 use std::{
+    any::Any,
     borrow::Cow,
     collections::BTreeMap,
     ffi::{CStr, c_char},
-    mem, ptr,
+    mem,
+    panic::{AssertUnwindSafe, catch_unwind},
+    ptr,
 };
 
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, MontyRun, NameLookupResult,
-    NoLimitTracker, PrintWriter, PrintWriterCallback, ReplProgress, ResourceTracker, RunProgress,
+    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, MontyRun,
+    NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ReplProgress,
+    ResourceTracker, RunProgress,
 };
 use monty_type_checking::{SourceFile, TypeCheckingDiagnostics, type_check};
 use wire::{
-    WireCallResult, WireCompileOptions, WireErrorSummary, WireFeedOptions, WireFutureResults, WireLookupResult,
-    WireProgressDescription, WireReplOptions, WireStartOptions, WireValue,
+    WireCallResult, WireCompileOptions, WireErrorSummary, WireFeedOptions, WireFutureResults,
+    WireLookupResult, WireProgressDescription, WireReplOptions, WireStartOptions, WireValue,
 };
 
 /// Opaque runner handle for the Go bindings.
@@ -52,6 +56,78 @@ enum FfiError {
     Exception(MontyException),
     Typing(TypeCheckingDiagnostics),
     Api(String),
+}
+
+fn ffi_panic_error(payload: Box<dyn Any + Send>) -> FfiError {
+    let message = if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic payload was not a string".to_owned()
+    };
+    FfiError::Api(format!("monty-go ffi panicked: {message}"))
+}
+
+fn catch_runner_result<F>(f: F) -> MontyGoRunnerResult
+where
+    F: FnOnce() -> MontyGoRunnerResult,
+{
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => MontyGoRunnerResult::err(ffi_panic_error(payload)),
+    }
+}
+
+fn catch_repl_result<F>(f: F) -> MontyGoReplResult
+where
+    F: FnOnce() -> MontyGoReplResult,
+{
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => MontyGoReplResult::err(ffi_panic_error(payload)),
+    }
+}
+
+fn catch_op_result<F>(f: F) -> MontyGoOpResult
+where
+    F: FnOnce() -> MontyGoOpResult,
+{
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => MontyGoOpResult::err(ffi_panic_error(payload), None, String::new()),
+    }
+}
+
+fn catch_error_result<F>(f: F) -> *mut MontyGoError
+where
+    F: FnOnce() -> *mut MontyGoError,
+{
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => Box::into_raw(Box::new(MontyGoError {
+            inner: ffi_panic_error(payload),
+        })),
+    }
+}
+
+fn catch_bytes_result<F>(error_out: *mut *mut MontyGoError, f: F) -> MontyGoBytes
+where
+    F: FnOnce() -> MontyGoBytes,
+{
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => {
+            if !error_out.is_null() {
+                unsafe {
+                    *error_out = Box::into_raw(Box::new(MontyGoError {
+                        inner: ffi_panic_error(payload),
+                    }))
+                };
+            }
+            MontyGoBytes::empty()
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -177,7 +253,9 @@ impl MontyGoReplResult {
 impl MontyGoOpResult {
     fn ok(progress: StoredProgress, prints: String) -> Self {
         Self {
-            progress: Box::into_raw(Box::new(MontyGoProgress { inner: Some(progress) })),
+            progress: Box::into_raw(Box::new(MontyGoProgress {
+                inner: Some(progress),
+            })),
             error: ptr::null_mut(),
             repl: ptr::null_mut(),
             prints: MontyGoBytes::from_vec(prints.into_bytes()),
@@ -202,7 +280,9 @@ struct PrintCollector {
 
 impl PrintCollector {
     fn new() -> Self {
-        Self { buffer: String::new() }
+        Self {
+            buffer: String::new(),
+        }
     }
 
     fn into_string(self) -> String {
@@ -271,26 +351,44 @@ impl FfiError {
 impl StoredProgress {
     fn describe(&self) -> WireProgressDescription {
         match self {
-            Self::RunNoLimit { progress, script_name } => describe_run_progress(progress, script_name, false),
-            Self::RunLimited { progress, script_name } => describe_run_progress(progress, script_name, false),
-            Self::ReplNoLimit { progress, script_name } => describe_repl_progress(progress, script_name, true),
-            Self::ReplLimited { progress, script_name } => describe_repl_progress(progress, script_name, true),
+            Self::RunNoLimit {
+                progress,
+                script_name,
+            } => describe_run_progress(progress, script_name, false),
+            Self::RunLimited {
+                progress,
+                script_name,
+            } => describe_run_progress(progress, script_name, false),
+            Self::ReplNoLimit {
+                progress,
+                script_name,
+            } => describe_repl_progress(progress, script_name, true),
+            Self::ReplLimited {
+                progress,
+                script_name,
+            } => describe_repl_progress(progress, script_name, true),
         }
     }
 
     fn into_repl(self) -> Result<MontyGoRepl, FfiError> {
         match self {
-            Self::ReplNoLimit { progress, script_name } => Ok(MontyGoRepl {
+            Self::ReplNoLimit {
+                progress,
+                script_name,
+            } => Ok(MontyGoRepl {
                 script_name,
                 inner: Some(StoredRepl::NoLimit(progress.into_repl())),
             }),
-            Self::ReplLimited { progress, script_name } => Ok(MontyGoRepl {
+            Self::ReplLimited {
+                progress,
+                script_name,
+            } => Ok(MontyGoRepl {
                 script_name,
                 inner: Some(StoredRepl::Limited(progress.into_repl())),
             }),
-            Self::RunNoLimit { .. } | Self::RunLimited { .. } => {
-                Err(FfiError::Api("progress handle does not own a REPL session".to_owned()))
-            }
+            Self::RunNoLimit { .. } | Self::RunLimited { .. } => Err(FfiError::Api(
+                "progress handle does not own a REPL session".to_owned(),
+            )),
         }
     }
 
@@ -425,7 +523,10 @@ fn describe_repl_progress<T: ResourceTracker>(
     }
 }
 
-fn extract_inputs(input_names: &[String], inputs: BTreeMap<String, WireValue>) -> Result<Vec<MontyObject>, FfiError> {
+fn extract_inputs(
+    input_names: &[String],
+    inputs: BTreeMap<String, WireValue>,
+) -> Result<Vec<MontyObject>, FfiError> {
     input_names
         .iter()
         .map(|name| {
@@ -438,10 +539,17 @@ fn extract_inputs(input_names: &[String], inputs: BTreeMap<String, WireValue>) -
         .collect()
 }
 
-fn extract_feed_inputs(inputs: BTreeMap<String, WireValue>) -> Result<Vec<(String, MontyObject)>, FfiError> {
+fn extract_feed_inputs(
+    inputs: BTreeMap<String, WireValue>,
+) -> Result<Vec<(String, MontyObject)>, FfiError> {
     inputs
         .into_iter()
-        .map(|(name, value)| value.into_monty().map(|value| (name, value)).map_err(FfiError::Api))
+        .map(|(name, value)| {
+            value
+                .into_monty()
+                .map(|value| (name, value))
+                .map_err(FfiError::Api)
+        })
         .collect()
 }
 
@@ -475,28 +583,36 @@ unsafe fn string_from_cstr<'a>(ptr: *const c_char) -> Result<&'a str, FfiError> 
 }
 
 fn decode_utf8<'a>(bytes: &'a [u8], field_name: &str) -> Result<&'a str, FfiError> {
-    std::str::from_utf8(bytes).map_err(|error| FfiError::Api(format!("{field_name} is not valid UTF-8: {error}")))
+    std::str::from_utf8(bytes)
+        .map_err(|error| FfiError::Api(format!("{field_name} is not valid UTF-8: {error}")))
 }
 
 fn decode_call_result(result: WireCallResult) -> Result<ExtFunctionResult, FfiError> {
     match result {
-        WireCallResult::Return { value } => value.into_monty().map(ExtFunctionResult::Return).map_err(FfiError::Api),
-        WireCallResult::Exception { exc_type, arg } => Ok(ExtFunctionResult::Error(MontyException::new(
-            parse_exc_type(&exc_type)?,
-            arg,
-        ))),
+        WireCallResult::Return { value } => value
+            .into_monty()
+            .map(ExtFunctionResult::Return)
+            .map_err(FfiError::Api),
+        WireCallResult::Exception { exc_type, arg } => Ok(ExtFunctionResult::Error(
+            MontyException::new(parse_exc_type(&exc_type)?, arg),
+        )),
         WireCallResult::Pending => Ok(ExtFunctionResult::Future(0)),
     }
 }
 
 fn decode_lookup_result(result: WireLookupResult) -> Result<NameLookupResult, FfiError> {
     match result {
-        WireLookupResult::Value { value } => value.into_monty().map(NameLookupResult::Value).map_err(FfiError::Api),
+        WireLookupResult::Value { value } => value
+            .into_monty()
+            .map(NameLookupResult::Value)
+            .map_err(FfiError::Api),
         WireLookupResult::Undefined => Ok(NameLookupResult::Undefined),
     }
 }
 
-fn decode_future_results(results: WireFutureResults) -> Result<Vec<(u32, ExtFunctionResult)>, FfiError> {
+fn decode_future_results(
+    results: WireFutureResults,
+) -> Result<Vec<(u32, ExtFunctionResult)>, FfiError> {
     results
         .results
         .into_iter()
@@ -527,7 +643,8 @@ fn start_runner_internal(
     handle: &MontyGoRunner,
     options: WireStartOptions,
 ) -> Result<(StoredProgress, String), (FfiError, String)> {
-    let inputs = extract_inputs(&handle.input_names, options.inputs).map_err(|error| (error, String::new()))?;
+    let inputs = extract_inputs(&handle.input_names, options.inputs)
+        .map_err(|error| (error, String::new()))?;
     let mut prints = PrintCollector::new();
 
     let start_result = if let Some(limits) = options.limits {
@@ -579,14 +696,22 @@ fn feed_start_internal(
     let code = match decode_utf8(code, "code") {
         Ok(code) => code,
         Err(error) => {
-            return Err((error, wrap_repl_handle(&repl_handle.script_name, repl), String::new()));
+            return Err((
+                error,
+                wrap_repl_handle(&repl_handle.script_name, repl),
+                String::new(),
+            ));
         }
     };
 
     let inputs = match extract_feed_inputs(options.inputs) {
         Ok(inputs) => inputs,
         Err(error) => {
-            return Err((error, wrap_repl_handle(&repl_handle.script_name, repl), String::new()));
+            return Err((
+                error,
+                wrap_repl_handle(&repl_handle.script_name, repl),
+                String::new(),
+            ));
         }
     };
 
@@ -594,28 +719,38 @@ fn feed_start_internal(
     let script_name = repl_handle.script_name.clone();
 
     match repl {
-        StoredRepl::NoLimit(repl) => match repl.feed_start(code, inputs, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::ReplNoLimit { progress, script_name },
-                prints.into_string(),
-            )),
-            Err(error) => Err((
-                FfiError::Exception(error.error),
-                wrap_repl_handle(&script_name, StoredRepl::NoLimit(error.repl)),
-                prints.into_string(),
-            )),
-        },
-        StoredRepl::Limited(repl) => match repl.feed_start(code, inputs, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::ReplLimited { progress, script_name },
-                prints.into_string(),
-            )),
-            Err(error) => Err((
-                FfiError::Exception(error.error),
-                wrap_repl_handle(&script_name, StoredRepl::Limited(error.repl)),
-                prints.into_string(),
-            )),
-        },
+        StoredRepl::NoLimit(repl) => {
+            match repl.feed_start(code, inputs, PrintWriter::Callback(&mut prints)) {
+                Ok(progress) => Ok((
+                    StoredProgress::ReplNoLimit {
+                        progress,
+                        script_name,
+                    },
+                    prints.into_string(),
+                )),
+                Err(error) => Err((
+                    FfiError::Exception(error.error),
+                    wrap_repl_handle(&script_name, StoredRepl::NoLimit(error.repl)),
+                    prints.into_string(),
+                )),
+            }
+        }
+        StoredRepl::Limited(repl) => {
+            match repl.feed_start(code, inputs, PrintWriter::Callback(&mut prints)) {
+                Ok(progress) => Ok((
+                    StoredProgress::ReplLimited {
+                        progress,
+                        script_name,
+                    },
+                    prints.into_string(),
+                )),
+                Err(error) => Err((
+                    FfiError::Exception(error.error),
+                    wrap_repl_handle(&script_name, StoredRepl::Limited(error.repl)),
+                    prints.into_string(),
+                )),
+            }
+        }
     }
 }
 
@@ -635,7 +770,10 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::RunNoLimit { progress, script_name },
+                    StoredProgress::RunNoLimit {
+                        progress,
+                        script_name,
+                    },
                     prints.into_string(),
                 )),
                 Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
@@ -651,7 +789,10 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::RunNoLimit { progress, script_name },
+                    StoredProgress::RunNoLimit {
+                        progress,
+                        script_name,
+                    },
                     prints.into_string(),
                 )),
                 Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
@@ -667,7 +808,10 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::RunLimited { progress, script_name },
+                    StoredProgress::RunLimited {
+                        progress,
+                        script_name,
+                    },
                     prints.into_string(),
                 )),
                 Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
@@ -683,7 +827,10 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::RunLimited { progress, script_name },
+                    StoredProgress::RunLimited {
+                        progress,
+                        script_name,
+                    },
                     prints.into_string(),
                 )),
                 Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
@@ -699,7 +846,10 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::ReplNoLimit { progress, script_name },
+                    StoredProgress::ReplNoLimit {
+                        progress,
+                        script_name,
+                    },
                     prints.into_string(),
                 )),
                 Err(error) => Err((
@@ -722,7 +872,10 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::ReplNoLimit { progress, script_name },
+                    StoredProgress::ReplNoLimit {
+                        progress,
+                        script_name,
+                    },
                     prints.into_string(),
                 )),
                 Err(error) => Err((
@@ -745,7 +898,10 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::ReplLimited { progress, script_name },
+                    StoredProgress::ReplLimited {
+                        progress,
+                        script_name,
+                    },
                     prints.into_string(),
                 )),
                 Err(error) => Err((
@@ -768,7 +924,10 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::ReplLimited { progress, script_name },
+                    StoredProgress::ReplLimited {
+                        progress,
+                        script_name,
+                    },
                     prints.into_string(),
                 )),
                 Err(error) => Err((
@@ -807,7 +966,10 @@ fn resume_lookup_internal(
             script_name,
         } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::RunNoLimit { progress, script_name },
+                StoredProgress::RunNoLimit {
+                    progress,
+                    script_name,
+                },
                 prints.into_string(),
             )),
             Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
@@ -817,7 +979,10 @@ fn resume_lookup_internal(
             script_name,
         } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::RunLimited { progress, script_name },
+                StoredProgress::RunLimited {
+                    progress,
+                    script_name,
+                },
                 prints.into_string(),
             )),
             Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
@@ -827,7 +992,10 @@ fn resume_lookup_internal(
             script_name,
         } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::ReplNoLimit { progress, script_name },
+                StoredProgress::ReplNoLimit {
+                    progress,
+                    script_name,
+                },
                 prints.into_string(),
             )),
             Err(error) => Err((
@@ -844,7 +1012,10 @@ fn resume_lookup_internal(
             script_name,
         } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::ReplLimited { progress, script_name },
+                StoredProgress::ReplLimited {
+                    progress,
+                    script_name,
+                },
                 prints.into_string(),
             )),
             Err(error) => Err((
@@ -875,7 +1046,10 @@ fn resume_futures_internal(
             script_name,
         } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::RunNoLimit { progress, script_name },
+                StoredProgress::RunNoLimit {
+                    progress,
+                    script_name,
+                },
                 prints.into_string(),
             )),
             Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
@@ -885,7 +1059,10 @@ fn resume_futures_internal(
             script_name,
         } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::RunLimited { progress, script_name },
+                StoredProgress::RunLimited {
+                    progress,
+                    script_name,
+                },
                 prints.into_string(),
             )),
             Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
@@ -895,7 +1072,10 @@ fn resume_futures_internal(
             script_name,
         } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::ReplNoLimit { progress, script_name },
+                StoredProgress::ReplNoLimit {
+                    progress,
+                    script_name,
+                },
                 prints.into_string(),
             )),
             Err(error) => Err((
@@ -912,7 +1092,10 @@ fn resume_futures_internal(
             script_name,
         } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::ReplLimited { progress, script_name },
+                StoredProgress::ReplLimited {
+                    progress,
+                    script_name,
+                },
                 prints.into_string(),
             )),
             Err(error) => Err((
@@ -981,8 +1164,9 @@ pub extern "C" fn monty_go_error_json(error: *const MontyGoError) -> MontyGoByte
     }
     // SAFETY: caller passes a valid handle pointer
     let error = unsafe { &*error };
-    encode_json(&error.inner.summary())
-        .unwrap_or_else(|ffi_error| encode_json(&ffi_error.summary()).unwrap_or_else(|_| MontyGoBytes::empty()))
+    encode_json(&error.inner.summary()).unwrap_or_else(|ffi_error| {
+        encode_json(&ffi_error.summary()).unwrap_or_else(|_| MontyGoBytes::empty())
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1013,62 +1197,73 @@ pub extern "C" fn monty_go_runner_new(
     options_ptr: *const u8,
     options_len: usize,
 ) -> MontyGoRunnerResult {
-    let code = unsafe { slice_from_raw(code_ptr, code_len) };
-    let options = unsafe { slice_from_raw(options_ptr, options_len) };
+    catch_runner_result(|| {
+        let code = unsafe { slice_from_raw(code_ptr, code_len) };
+        let options = unsafe { slice_from_raw(options_ptr, options_len) };
 
-    let code = match std::str::from_utf8(code) {
-        Ok(code) => code.to_owned(),
-        Err(error) => return MontyGoRunnerResult::err(FfiError::Api(format!("code is not valid UTF-8: {error}"))),
-    };
-    let options: WireCompileOptions = match decode_json(options) {
-        Ok(options) => options,
-        Err(error) => return MontyGoRunnerResult::err(error),
-    };
+        let code = match std::str::from_utf8(code) {
+            Ok(code) => code.to_owned(),
+            Err(error) => {
+                return MontyGoRunnerResult::err(FfiError::Api(format!(
+                    "code is not valid UTF-8: {error}"
+                )));
+            }
+        };
+        let options: WireCompileOptions = match decode_json(options) {
+            Ok(options) => options,
+            Err(error) => return MontyGoRunnerResult::err(error),
+        };
 
-    let script_name = options.script_name.unwrap_or_else(|| "main.py".to_owned());
-    let input_names = options.inputs.unwrap_or_default();
+        let script_name = options.script_name.unwrap_or_else(|| "main.py".to_owned());
+        let input_names = options.inputs.unwrap_or_default();
 
-    if options.type_check {
-        let source = SourceFile::new(&code, &script_name);
-        let prefix = options
-            .type_check_stubs
-            .as_deref()
-            .map(|stubs| SourceFile::new(stubs, "type_stubs.py"));
-        match type_check(&source, prefix.as_ref()) {
-            Ok(Some(error)) => return MontyGoRunnerResult::err(FfiError::Typing(error)),
-            Ok(None) => {}
-            Err(error) => return MontyGoRunnerResult::err(FfiError::Api(error)),
+        if options.type_check {
+            let source = SourceFile::new(&code, &script_name);
+            let prefix = options
+                .type_check_stubs
+                .as_deref()
+                .map(|stubs| SourceFile::new(stubs, "type_stubs.py"));
+            match type_check(&source, prefix.as_ref()) {
+                Ok(Some(error)) => return MontyGoRunnerResult::err(FfiError::Typing(error)),
+                Ok(None) => {}
+                Err(error) => return MontyGoRunnerResult::err(FfiError::Api(error)),
+            }
         }
-    }
 
-    match MontyRun::new(code, &script_name, input_names.clone()) {
-        Ok(runner) => MontyGoRunnerResult::ok(MontyGoRunner {
-            runner,
-            script_name,
-            input_names,
-        }),
-        Err(error) => MontyGoRunnerResult::err(FfiError::Exception(error)),
-    }
+        match MontyRun::new(code, &script_name, input_names.clone()) {
+            Ok(runner) => MontyGoRunnerResult::ok(MontyGoRunner {
+                runner,
+                script_name,
+                input_names,
+            }),
+            Err(error) => MontyGoRunnerResult::err(FfiError::Exception(error)),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn monty_go_runner_load(data_ptr: *const u8, data_len: usize) -> MontyGoRunnerResult {
-    let data = unsafe { slice_from_raw(data_ptr, data_len) };
-    #[derive(serde::Deserialize)]
-    struct StoredRunner {
-        runner: MontyRun,
-        script_name: String,
-        input_names: Vec<String>,
-    }
+pub extern "C" fn monty_go_runner_load(
+    data_ptr: *const u8,
+    data_len: usize,
+) -> MontyGoRunnerResult {
+    catch_runner_result(|| {
+        let data = unsafe { slice_from_raw(data_ptr, data_len) };
+        #[derive(serde::Deserialize)]
+        struct StoredRunner {
+            runner: MontyRun,
+            script_name: String,
+            input_names: Vec<String>,
+        }
 
-    match postcard::from_bytes::<StoredRunner>(data) {
-        Ok(stored) => MontyGoRunnerResult::ok(MontyGoRunner {
-            runner: stored.runner,
-            script_name: stored.script_name,
-            input_names: stored.input_names,
-        }),
-        Err(error) => MontyGoRunnerResult::err(FfiError::Api(error.to_string())),
-    }
+        match postcard::from_bytes::<StoredRunner>(data) {
+            Ok(stored) => MontyGoRunnerResult::ok(MontyGoRunner {
+                runner: stored.runner,
+                script_name: stored.script_name,
+                input_names: stored.input_names,
+            }),
+            Err(error) => MontyGoRunnerResult::err(FfiError::Api(error.to_string())),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1080,43 +1275,45 @@ pub extern "C" fn monty_go_runner_dump(
         // SAFETY: caller owns the out pointer
         unsafe { *error_out = ptr::null_mut() };
     }
-    if runner.is_null() {
-        if !error_out.is_null() {
-            unsafe {
-                *error_out = Box::into_raw(Box::new(MontyGoError {
-                    inner: FfiError::Api("runner handle is null".to_owned()),
-                }))
-            };
-        }
-        return MontyGoBytes::empty();
-    }
-    // SAFETY: caller passes a valid handle pointer
-    let runner = unsafe { &*runner };
-
-    #[derive(serde::Serialize)]
-    struct StoredRunner<'a> {
-        runner: &'a MontyRun,
-        script_name: &'a str,
-        input_names: &'a [String],
-    }
-
-    match postcard::to_allocvec(&StoredRunner {
-        runner: &runner.runner,
-        script_name: &runner.script_name,
-        input_names: &runner.input_names,
-    }) {
-        Ok(bytes) => MontyGoBytes::from_vec(bytes),
-        Err(error) => {
+    catch_bytes_result(error_out, || {
+        if runner.is_null() {
             if !error_out.is_null() {
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
-                        inner: FfiError::Api(error.to_string()),
+                        inner: FfiError::Api("runner handle is null".to_owned()),
                     }))
                 };
             }
-            MontyGoBytes::empty()
+            return MontyGoBytes::empty();
         }
-    }
+        // SAFETY: caller passes a valid handle pointer
+        let runner = unsafe { &*runner };
+
+        #[derive(serde::Serialize)]
+        struct StoredRunner<'a> {
+            runner: &'a MontyRun,
+            script_name: &'a str,
+            input_names: &'a [String],
+        }
+
+        match postcard::to_allocvec(&StoredRunner {
+            runner: &runner.runner,
+            script_name: &runner.script_name,
+            input_names: &runner.input_names,
+        }) {
+            Ok(bytes) => MontyGoBytes::from_vec(bytes),
+            Err(error) => {
+                if !error_out.is_null() {
+                    unsafe {
+                        *error_out = Box::into_raw(Box::new(MontyGoError {
+                            inner: FfiError::Api(error.to_string()),
+                        }))
+                    };
+                }
+                MontyGoBytes::empty()
+            }
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1125,38 +1322,42 @@ pub extern "C" fn monty_go_runner_type_check(
     prefix_ptr: *const u8,
     prefix_len: usize,
 ) -> *mut MontyGoError {
-    if runner.is_null() {
-        return Box::into_raw(Box::new(MontyGoError {
-            inner: FfiError::Api("runner handle is null".to_owned()),
-        }));
-    }
-    // SAFETY: caller passes a valid handle pointer
-    let runner = unsafe { &*runner };
-    let prefix = unsafe { slice_from_raw(prefix_ptr, prefix_len) };
-    let prefix = if prefix.is_empty() {
-        None
-    } else {
-        match std::str::from_utf8(prefix) {
-            Ok(prefix) => Some(prefix.to_owned()),
-            Err(error) => {
-                return Box::into_raw(Box::new(MontyGoError {
-                    inner: FfiError::Api(format!("prefix is not valid UTF-8: {error}")),
-                }));
-            }
+    catch_error_result(|| {
+        if runner.is_null() {
+            return Box::into_raw(Box::new(MontyGoError {
+                inner: FfiError::Api("runner handle is null".to_owned()),
+            }));
         }
-    };
+        // SAFETY: caller passes a valid handle pointer
+        let runner = unsafe { &*runner };
+        let prefix = unsafe { slice_from_raw(prefix_ptr, prefix_len) };
+        let prefix = if prefix.is_empty() {
+            None
+        } else {
+            match std::str::from_utf8(prefix) {
+                Ok(prefix) => Some(prefix.to_owned()),
+                Err(error) => {
+                    return Box::into_raw(Box::new(MontyGoError {
+                        inner: FfiError::Api(format!("prefix is not valid UTF-8: {error}")),
+                    }));
+                }
+            }
+        };
 
-    let source = SourceFile::new(runner.runner.code(), &runner.script_name);
-    let prefix = prefix.as_deref().map(|prefix| SourceFile::new(prefix, "type_stubs.py"));
-    match type_check(&source, prefix.as_ref()) {
-        Ok(None) => ptr::null_mut(),
-        Ok(Some(error)) => Box::into_raw(Box::new(MontyGoError {
-            inner: FfiError::Typing(error),
-        })),
-        Err(error) => Box::into_raw(Box::new(MontyGoError {
-            inner: FfiError::Api(error),
-        })),
-    }
+        let source = SourceFile::new(runner.runner.code(), &runner.script_name);
+        let prefix = prefix
+            .as_deref()
+            .map(|prefix| SourceFile::new(prefix, "type_stubs.py"));
+        match type_check(&source, prefix.as_ref()) {
+            Ok(None) => ptr::null_mut(),
+            Ok(Some(error)) => Box::into_raw(Box::new(MontyGoError {
+                inner: FfiError::Typing(error),
+            })),
+            Err(error) => Box::into_raw(Box::new(MontyGoError {
+                inner: FfiError::Api(error),
+            })),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1165,107 +1366,128 @@ pub extern "C" fn monty_go_runner_start(
     options_ptr: *const u8,
     options_len: usize,
 ) -> MontyGoOpResult {
-    if runner.is_null() {
-        return MontyGoOpResult::err(FfiError::Api("runner handle is null".to_owned()), None, String::new());
-    }
-    // SAFETY: caller passes a valid handle pointer
-    let runner = unsafe { &*runner };
-    let options = unsafe { slice_from_raw(options_ptr, options_len) };
-    let options: WireStartOptions = match decode_json(options) {
-        Ok(options) => options,
-        Err(error) => return MontyGoOpResult::err(error, None, String::new()),
-    };
-    match start_runner_internal(runner, options) {
-        Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
-        Err((error, prints)) => MontyGoOpResult::err(error, None, prints),
-    }
+    catch_op_result(|| {
+        if runner.is_null() {
+            return MontyGoOpResult::err(
+                FfiError::Api("runner handle is null".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        // SAFETY: caller passes a valid handle pointer
+        let runner = unsafe { &*runner };
+        let options = unsafe { slice_from_raw(options_ptr, options_len) };
+        let options: WireStartOptions = match decode_json(options) {
+            Ok(options) => options,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        match start_runner_internal(runner, options) {
+            Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
+            Err((error, prints)) => MontyGoOpResult::err(error, None, prints),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn monty_go_repl_new(options_ptr: *const u8, options_len: usize) -> MontyGoReplResult {
-    let options = unsafe { slice_from_raw(options_ptr, options_len) };
-    let options: WireReplOptions = match decode_json(options) {
-        Ok(options) => options,
-        Err(error) => return MontyGoReplResult::err(error),
-    };
-    let script_name = options.script_name.unwrap_or_else(|| "main.py".to_owned());
-    let inner = if let Some(limits) = options.limits {
-        StoredRepl::Limited(MontyRepl::new(&script_name, LimitedTracker::new(limits.into())))
-    } else {
-        StoredRepl::NoLimit(MontyRepl::new(&script_name, NoLimitTracker))
-    };
+pub extern "C" fn monty_go_repl_new(
+    options_ptr: *const u8,
+    options_len: usize,
+) -> MontyGoReplResult {
+    catch_repl_result(|| {
+        let options = unsafe { slice_from_raw(options_ptr, options_len) };
+        let options: WireReplOptions = match decode_json(options) {
+            Ok(options) => options,
+            Err(error) => return MontyGoReplResult::err(error),
+        };
+        let script_name = options.script_name.unwrap_or_else(|| "main.py".to_owned());
+        let inner = if let Some(limits) = options.limits {
+            StoredRepl::Limited(MontyRepl::new(
+                &script_name,
+                LimitedTracker::new(limits.into()),
+            ))
+        } else {
+            StoredRepl::NoLimit(MontyRepl::new(&script_name, NoLimitTracker))
+        };
 
-    MontyGoReplResult::ok(MontyGoRepl {
-        script_name,
-        inner: Some(inner),
+        MontyGoReplResult::ok(MontyGoRepl {
+            script_name,
+            inner: Some(inner),
+        })
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_repl_load(data_ptr: *const u8, data_len: usize) -> MontyGoReplResult {
-    let data = unsafe { slice_from_raw(data_ptr, data_len) };
-    #[derive(serde::Deserialize)]
-    struct StoredLoadedRepl {
-        script_name: String,
-        repl: StoredRepl,
-    }
+    catch_repl_result(|| {
+        let data = unsafe { slice_from_raw(data_ptr, data_len) };
+        #[derive(serde::Deserialize)]
+        struct StoredLoadedRepl {
+            script_name: String,
+            repl: StoredRepl,
+        }
 
-    match postcard::from_bytes::<StoredLoadedRepl>(data) {
-        Ok(stored) => MontyGoReplResult::ok(MontyGoRepl {
-            script_name: stored.script_name,
-            inner: Some(stored.repl),
-        }),
-        Err(error) => MontyGoReplResult::err(FfiError::Api(error.to_string())),
-    }
+        match postcard::from_bytes::<StoredLoadedRepl>(data) {
+            Ok(stored) => MontyGoReplResult::ok(MontyGoRepl {
+                script_name: stored.script_name,
+                inner: Some(stored.repl),
+            }),
+            Err(error) => MontyGoReplResult::err(FfiError::Api(error.to_string())),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn monty_go_repl_dump(repl: *const MontyGoRepl, error_out: *mut *mut MontyGoError) -> MontyGoBytes {
+pub extern "C" fn monty_go_repl_dump(
+    repl: *const MontyGoRepl,
+    error_out: *mut *mut MontyGoError,
+) -> MontyGoBytes {
     if !error_out.is_null() {
         unsafe { *error_out = ptr::null_mut() };
     }
-    if repl.is_null() {
-        if !error_out.is_null() {
-            unsafe {
-                *error_out = Box::into_raw(Box::new(MontyGoError {
-                    inner: FfiError::Api("repl handle is null".to_owned()),
-                }))
-            };
-        }
-        return MontyGoBytes::empty();
-    }
-    let repl = unsafe { &*repl };
-    let Some(inner) = &repl.inner else {
-        if !error_out.is_null() {
-            unsafe {
-                *error_out = Box::into_raw(Box::new(MontyGoError {
-                    inner: FfiError::Api("repl handle is not currently available".to_owned()),
-                }))
-            };
-        }
-        return MontyGoBytes::empty();
-    };
-    #[derive(serde::Serialize)]
-    struct StoredReplRef<'a> {
-        script_name: &'a str,
-        repl: &'a StoredRepl,
-    }
-    match postcard::to_allocvec(&StoredReplRef {
-        script_name: &repl.script_name,
-        repl: inner,
-    }) {
-        Ok(bytes) => MontyGoBytes::from_vec(bytes),
-        Err(error) => {
+    catch_bytes_result(error_out, || {
+        if repl.is_null() {
             if !error_out.is_null() {
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
-                        inner: FfiError::Api(error.to_string()),
+                        inner: FfiError::Api("repl handle is null".to_owned()),
                     }))
                 };
             }
-            MontyGoBytes::empty()
+            return MontyGoBytes::empty();
         }
-    }
+        let repl = unsafe { &*repl };
+        let Some(inner) = &repl.inner else {
+            if !error_out.is_null() {
+                unsafe {
+                    *error_out = Box::into_raw(Box::new(MontyGoError {
+                        inner: FfiError::Api("repl handle is not currently available".to_owned()),
+                    }))
+                };
+            }
+            return MontyGoBytes::empty();
+        };
+        #[derive(serde::Serialize)]
+        struct StoredReplRef<'a> {
+            script_name: &'a str,
+            repl: &'a StoredRepl,
+        }
+        match postcard::to_allocvec(&StoredReplRef {
+            script_name: &repl.script_name,
+            repl: inner,
+        }) {
+            Ok(bytes) => MontyGoBytes::from_vec(bytes),
+            Err(error) => {
+                if !error_out.is_null() {
+                    unsafe {
+                        *error_out = Box::into_raw(Box::new(MontyGoError {
+                            inner: FfiError::Api(error.to_string()),
+                        }))
+                    };
+                }
+                MontyGoBytes::empty()
+            }
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1276,20 +1498,26 @@ pub extern "C" fn monty_go_repl_feed_start(
     options_ptr: *const u8,
     options_len: usize,
 ) -> MontyGoOpResult {
-    if repl.is_null() {
-        return MontyGoOpResult::err(FfiError::Api("repl handle is null".to_owned()), None, String::new());
-    }
-    let repl = unsafe { &mut *repl };
-    let code = unsafe { slice_from_raw(code_ptr, code_len) };
-    let options = unsafe { slice_from_raw(options_ptr, options_len) };
-    let options: WireFeedOptions = match decode_json(options) {
-        Ok(options) => options,
-        Err(error) => return MontyGoOpResult::err(error, None, String::new()),
-    };
-    match feed_start_internal(repl, code, options) {
-        Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
-        Err((error, repl, prints)) => MontyGoOpResult::err(error, Some(repl), prints),
-    }
+    catch_op_result(|| {
+        if repl.is_null() {
+            return MontyGoOpResult::err(
+                FfiError::Api("repl handle is null".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        let repl = unsafe { &mut *repl };
+        let code = unsafe { slice_from_raw(code_ptr, code_len) };
+        let options = unsafe { slice_from_raw(options_ptr, options_len) };
+        let options: WireFeedOptions = match decode_json(options) {
+            Ok(options) => options,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        match feed_start_internal(repl, code, options) {
+            Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
+            Err((error, repl, prints)) => MontyGoOpResult::err(error, Some(repl), prints),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1300,36 +1528,38 @@ pub extern "C" fn monty_go_progress_describe(
     if !error_out.is_null() {
         unsafe { *error_out = ptr::null_mut() };
     }
-    if progress.is_null() {
-        if !error_out.is_null() {
-            unsafe {
-                *error_out = Box::into_raw(Box::new(MontyGoError {
-                    inner: FfiError::Api("progress handle is null".to_owned()),
-                }))
-            };
-        }
-        return MontyGoBytes::empty();
-    }
-    let progress = unsafe { &*progress };
-    let Some(inner) = &progress.inner else {
-        if !error_out.is_null() {
-            unsafe {
-                *error_out = Box::into_raw(Box::new(MontyGoError {
-                    inner: FfiError::Api("progress handle is no longer available".to_owned()),
-                }))
-            };
-        }
-        return MontyGoBytes::empty();
-    };
-    match encode_json(&inner.describe()) {
-        Ok(bytes) => bytes,
-        Err(error) => {
+    catch_bytes_result(error_out, || {
+        if progress.is_null() {
             if !error_out.is_null() {
-                unsafe { *error_out = Box::into_raw(Box::new(MontyGoError { inner: error })) };
+                unsafe {
+                    *error_out = Box::into_raw(Box::new(MontyGoError {
+                        inner: FfiError::Api("progress handle is null".to_owned()),
+                    }))
+                };
             }
-            MontyGoBytes::empty()
+            return MontyGoBytes::empty();
         }
-    }
+        let progress = unsafe { &*progress };
+        let Some(inner) = &progress.inner else {
+            if !error_out.is_null() {
+                unsafe {
+                    *error_out = Box::into_raw(Box::new(MontyGoError {
+                        inner: FfiError::Api("progress handle is no longer available".to_owned()),
+                    }))
+                };
+            }
+            return MontyGoBytes::empty();
+        };
+        match encode_json(&inner.describe()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if !error_out.is_null() {
+                    unsafe { *error_out = Box::into_raw(Box::new(MontyGoError { inner: error })) };
+                }
+                MontyGoBytes::empty()
+            }
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1340,67 +1570,79 @@ pub extern "C" fn monty_go_progress_dump(
     if !error_out.is_null() {
         unsafe { *error_out = ptr::null_mut() };
     }
-    if progress.is_null() {
-        if !error_out.is_null() {
-            unsafe {
-                *error_out = Box::into_raw(Box::new(MontyGoError {
-                    inner: FfiError::Api("progress handle is null".to_owned()),
-                }))
-            };
-        }
-        return MontyGoBytes::empty();
-    }
-    let progress = unsafe { &*progress };
-    let Some(inner) = &progress.inner else {
-        if !error_out.is_null() {
-            unsafe {
-                *error_out = Box::into_raw(Box::new(MontyGoError {
-                    inner: FfiError::Api("progress handle is no longer available".to_owned()),
-                }))
-            };
-        }
-        return MontyGoBytes::empty();
-    };
-    match inner.dump() {
-        Ok(bytes) => MontyGoBytes::from_vec(bytes),
-        Err(error) => {
+    catch_bytes_result(error_out, || {
+        if progress.is_null() {
             if !error_out.is_null() {
-                unsafe { *error_out = Box::into_raw(Box::new(MontyGoError { inner: error })) };
+                unsafe {
+                    *error_out = Box::into_raw(Box::new(MontyGoError {
+                        inner: FfiError::Api("progress handle is null".to_owned()),
+                    }))
+                };
             }
-            MontyGoBytes::empty()
+            return MontyGoBytes::empty();
         }
-    }
+        let progress = unsafe { &*progress };
+        let Some(inner) = &progress.inner else {
+            if !error_out.is_null() {
+                unsafe {
+                    *error_out = Box::into_raw(Box::new(MontyGoError {
+                        inner: FfiError::Api("progress handle is no longer available".to_owned()),
+                    }))
+                };
+            }
+            return MontyGoBytes::empty();
+        };
+        match inner.dump() {
+            Ok(bytes) => MontyGoBytes::from_vec(bytes),
+            Err(error) => {
+                if !error_out.is_null() {
+                    unsafe { *error_out = Box::into_raw(Box::new(MontyGoError { inner: error })) };
+                }
+                MontyGoBytes::empty()
+            }
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_progress_load(data_ptr: *const u8, data_len: usize) -> MontyGoOpResult {
-    let data = unsafe { slice_from_raw(data_ptr, data_len) };
-    match postcard::from_bytes::<StoredProgress>(data) {
-        Ok(progress) => MontyGoOpResult::ok(progress, String::new()),
-        Err(error) => MontyGoOpResult::err(FfiError::Api(error.to_string()), None, String::new()),
-    }
+    catch_op_result(|| {
+        let data = unsafe { slice_from_raw(data_ptr, data_len) };
+        match postcard::from_bytes::<StoredProgress>(data) {
+            Ok(progress) => MontyGoOpResult::ok(progress, String::new()),
+            Err(error) => {
+                MontyGoOpResult::err(FfiError::Api(error.to_string()), None, String::new())
+            }
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_progress_take_repl(progress: *mut MontyGoProgress) -> MontyGoReplResult {
-    if progress.is_null() {
-        return MontyGoReplResult::err(FfiError::Api("progress handle is null".to_owned()));
-    }
-    let progress = unsafe { &mut *progress };
-    let Some(inner) = progress.inner.take() else {
-        return MontyGoReplResult::err(FfiError::Api("progress handle is no longer available".to_owned()));
-    };
-    if !matches!(
-        &inner,
-        StoredProgress::ReplNoLimit { .. } | StoredProgress::ReplLimited { .. }
-    ) {
-        progress.inner = Some(inner);
-        return MontyGoReplResult::err(FfiError::Api("progress handle does not own a REPL session".to_owned()));
-    }
-    match inner.into_repl() {
-        Ok(repl) => MontyGoReplResult::ok(repl),
-        Err(error) => MontyGoReplResult::err(error),
-    }
+    catch_repl_result(|| {
+        if progress.is_null() {
+            return MontyGoReplResult::err(FfiError::Api("progress handle is null".to_owned()));
+        }
+        let progress = unsafe { &mut *progress };
+        let Some(inner) = progress.inner.take() else {
+            return MontyGoReplResult::err(FfiError::Api(
+                "progress handle is no longer available".to_owned(),
+            ));
+        };
+        if !matches!(
+            &inner,
+            StoredProgress::ReplNoLimit { .. } | StoredProgress::ReplLimited { .. }
+        ) {
+            progress.inner = Some(inner);
+            return MontyGoReplResult::err(FfiError::Api(
+                "progress handle does not own a REPL session".to_owned(),
+            ));
+        }
+        match inner.into_repl() {
+            Ok(repl) => MontyGoReplResult::ok(repl),
+            Err(error) => MontyGoReplResult::err(error),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1409,54 +1651,60 @@ pub extern "C" fn monty_go_progress_resume_call(
     result_ptr: *const u8,
     result_len: usize,
 ) -> MontyGoOpResult {
-    if progress.is_null() {
-        return MontyGoOpResult::err(FfiError::Api("progress handle is null".to_owned()), None, String::new());
-    }
-    let progress = unsafe { &mut *progress };
-    let result = unsafe { slice_from_raw(result_ptr, result_len) };
-    let result: WireCallResult = match decode_json(result) {
-        Ok(result) => result,
-        Err(error) => return MontyGoOpResult::err(error, None, String::new()),
-    };
-    let result = match decode_call_result(result) {
-        Ok(result) => result,
-        Err(error) => return MontyGoOpResult::err(error, None, String::new()),
-    };
-    if !matches!(
-        progress.inner.as_ref(),
-        Some(
-            StoredProgress::RunNoLimit {
-                progress: RunProgress::FunctionCall(_) | RunProgress::OsCall(_),
-                ..
-            } | StoredProgress::RunLimited {
-                progress: RunProgress::FunctionCall(_) | RunProgress::OsCall(_),
-                ..
-            } | StoredProgress::ReplNoLimit {
-                progress: ReplProgress::FunctionCall(_) | ReplProgress::OsCall(_),
-                ..
-            } | StoredProgress::ReplLimited {
-                progress: ReplProgress::FunctionCall(_) | ReplProgress::OsCall(_),
-                ..
-            }
-        )
-    ) {
-        return MontyGoOpResult::err(
-            FfiError::Api("progress is not a function or os-call snapshot".to_owned()),
-            None,
-            String::new(),
-        );
-    }
-    let Some(inner) = progress.inner.take() else {
-        return MontyGoOpResult::err(
-            FfiError::Api("progress handle is no longer available".to_owned()),
-            None,
-            String::new(),
-        );
-    };
-    match resume_call_internal(inner, result) {
-        Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
-        Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
-    }
+    catch_op_result(|| {
+        if progress.is_null() {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress handle is null".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        let progress = unsafe { &mut *progress };
+        let result = unsafe { slice_from_raw(result_ptr, result_len) };
+        let result: WireCallResult = match decode_json(result) {
+            Ok(result) => result,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        let result = match decode_call_result(result) {
+            Ok(result) => result,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        if !matches!(
+            progress.inner.as_ref(),
+            Some(
+                StoredProgress::RunNoLimit {
+                    progress: RunProgress::FunctionCall(_) | RunProgress::OsCall(_),
+                    ..
+                } | StoredProgress::RunLimited {
+                    progress: RunProgress::FunctionCall(_) | RunProgress::OsCall(_),
+                    ..
+                } | StoredProgress::ReplNoLimit {
+                    progress: ReplProgress::FunctionCall(_) | ReplProgress::OsCall(_),
+                    ..
+                } | StoredProgress::ReplLimited {
+                    progress: ReplProgress::FunctionCall(_) | ReplProgress::OsCall(_),
+                    ..
+                }
+            )
+        ) {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress is not a function or os-call snapshot".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        let Some(inner) = progress.inner.take() else {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress handle is no longer available".to_owned()),
+                None,
+                String::new(),
+            );
+        };
+        match resume_call_internal(inner, result) {
+            Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
+            Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1465,54 +1713,60 @@ pub extern "C" fn monty_go_progress_resume_lookup(
     result_ptr: *const u8,
     result_len: usize,
 ) -> MontyGoOpResult {
-    if progress.is_null() {
-        return MontyGoOpResult::err(FfiError::Api("progress handle is null".to_owned()), None, String::new());
-    }
-    let progress = unsafe { &mut *progress };
-    let result = unsafe { slice_from_raw(result_ptr, result_len) };
-    let result: WireLookupResult = match decode_json(result) {
-        Ok(result) => result,
-        Err(error) => return MontyGoOpResult::err(error, None, String::new()),
-    };
-    let result = match decode_lookup_result(result) {
-        Ok(result) => result,
-        Err(error) => return MontyGoOpResult::err(error, None, String::new()),
-    };
-    if !matches!(
-        progress.inner.as_ref(),
-        Some(
-            StoredProgress::RunNoLimit {
-                progress: RunProgress::NameLookup(_),
-                ..
-            } | StoredProgress::RunLimited {
-                progress: RunProgress::NameLookup(_),
-                ..
-            } | StoredProgress::ReplNoLimit {
-                progress: ReplProgress::NameLookup(_),
-                ..
-            } | StoredProgress::ReplLimited {
-                progress: ReplProgress::NameLookup(_),
-                ..
-            }
-        )
-    ) {
-        return MontyGoOpResult::err(
-            FfiError::Api("progress is not a name-lookup snapshot".to_owned()),
-            None,
-            String::new(),
-        );
-    }
-    let Some(inner) = progress.inner.take() else {
-        return MontyGoOpResult::err(
-            FfiError::Api("progress handle is no longer available".to_owned()),
-            None,
-            String::new(),
-        );
-    };
-    match resume_lookup_internal(inner, result) {
-        Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
-        Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
-    }
+    catch_op_result(|| {
+        if progress.is_null() {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress handle is null".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        let progress = unsafe { &mut *progress };
+        let result = unsafe { slice_from_raw(result_ptr, result_len) };
+        let result: WireLookupResult = match decode_json(result) {
+            Ok(result) => result,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        let result = match decode_lookup_result(result) {
+            Ok(result) => result,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        if !matches!(
+            progress.inner.as_ref(),
+            Some(
+                StoredProgress::RunNoLimit {
+                    progress: RunProgress::NameLookup(_),
+                    ..
+                } | StoredProgress::RunLimited {
+                    progress: RunProgress::NameLookup(_),
+                    ..
+                } | StoredProgress::ReplNoLimit {
+                    progress: ReplProgress::NameLookup(_),
+                    ..
+                } | StoredProgress::ReplLimited {
+                    progress: ReplProgress::NameLookup(_),
+                    ..
+                }
+            )
+        ) {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress is not a name-lookup snapshot".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        let Some(inner) = progress.inner.take() else {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress handle is no longer available".to_owned()),
+                None,
+                String::new(),
+            );
+        };
+        match resume_lookup_internal(inner, result) {
+            Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
+            Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1521,52 +1775,58 @@ pub extern "C" fn monty_go_progress_resume_futures(
     results_ptr: *const u8,
     results_len: usize,
 ) -> MontyGoOpResult {
-    if progress.is_null() {
-        return MontyGoOpResult::err(FfiError::Api("progress handle is null".to_owned()), None, String::new());
-    }
-    let progress = unsafe { &mut *progress };
-    let results = unsafe { slice_from_raw(results_ptr, results_len) };
-    let results: WireFutureResults = match decode_json(results) {
-        Ok(results) => results,
-        Err(error) => return MontyGoOpResult::err(error, None, String::new()),
-    };
-    let results = match decode_future_results(results) {
-        Ok(results) => results,
-        Err(error) => return MontyGoOpResult::err(error, None, String::new()),
-    };
-    if !matches!(
-        progress.inner.as_ref(),
-        Some(
-            StoredProgress::RunNoLimit {
-                progress: RunProgress::ResolveFutures(_),
-                ..
-            } | StoredProgress::RunLimited {
-                progress: RunProgress::ResolveFutures(_),
-                ..
-            } | StoredProgress::ReplNoLimit {
-                progress: ReplProgress::ResolveFutures(_),
-                ..
-            } | StoredProgress::ReplLimited {
-                progress: ReplProgress::ResolveFutures(_),
-                ..
-            }
-        )
-    ) {
-        return MontyGoOpResult::err(
-            FfiError::Api("progress is not a future snapshot".to_owned()),
-            None,
-            String::new(),
-        );
-    }
-    let Some(inner) = progress.inner.take() else {
-        return MontyGoOpResult::err(
-            FfiError::Api("progress handle is no longer available".to_owned()),
-            None,
-            String::new(),
-        );
-    };
-    match resume_futures_internal(inner, results) {
-        Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
-        Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
-    }
+    catch_op_result(|| {
+        if progress.is_null() {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress handle is null".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        let progress = unsafe { &mut *progress };
+        let results = unsafe { slice_from_raw(results_ptr, results_len) };
+        let results: WireFutureResults = match decode_json(results) {
+            Ok(results) => results,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        let results = match decode_future_results(results) {
+            Ok(results) => results,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        if !matches!(
+            progress.inner.as_ref(),
+            Some(
+                StoredProgress::RunNoLimit {
+                    progress: RunProgress::ResolveFutures(_),
+                    ..
+                } | StoredProgress::RunLimited {
+                    progress: RunProgress::ResolveFutures(_),
+                    ..
+                } | StoredProgress::ReplNoLimit {
+                    progress: ReplProgress::ResolveFutures(_),
+                    ..
+                } | StoredProgress::ReplLimited {
+                    progress: ReplProgress::ResolveFutures(_),
+                    ..
+                }
+            )
+        ) {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress is not a future snapshot".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        let Some(inner) = progress.inner.take() else {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress handle is no longer available".to_owned()),
+                None,
+                String::new(),
+            );
+        };
+        match resume_futures_internal(inner, results) {
+            Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
+            Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
+        }
+    })
 }

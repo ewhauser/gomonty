@@ -114,8 +114,12 @@ impl WireValue {
                 value: value.to_string(),
             },
             MontyObject::Float(value) => Self::Float { value: *value },
-            MontyObject::String(value) => Self::String { value: value.clone() },
-            MontyObject::Bytes(value) => Self::Bytes { value: value.clone() },
+            MontyObject::String(value) => Self::String {
+                value: value.clone(),
+            },
+            MontyObject::Bytes(value) => Self::Bytes {
+                value: value.clone(),
+            },
             MontyObject::List(items) => Self::List {
                 items: items.iter().map(Self::from_monty).collect(),
             },
@@ -150,7 +154,9 @@ impl WireValue {
                 exc_type: exc_type.to_string(),
                 arg: arg.clone(),
             },
-            MontyObject::Path(value) => Self::Path { value: value.clone() },
+            MontyObject::Path(value) => Self::Path {
+                value: value.clone(),
+            },
             MontyObject::Dataclass {
                 name,
                 type_id,
@@ -174,7 +180,9 @@ impl WireValue {
                 name: name.clone(),
                 docstring: docstring.clone(),
             }),
-            MontyObject::Repr(value) => Self::Repr { value: value.clone() },
+            MontyObject::Repr(value) => Self::Repr {
+                value: value.clone(),
+            },
             MontyObject::Cycle(_, placeholder) => Self::Cycle {
                 placeholder: placeholder.clone(),
             },
@@ -205,10 +213,16 @@ impl WireValue {
             Self::String { value } => Ok(MontyObject::String(value)),
             Self::Bytes { value } => Ok(MontyObject::Bytes(value)),
             Self::List { items } => Ok(MontyObject::List(
-                items.into_iter().map(Self::into_monty).collect::<Result<Vec<_>, _>>()?,
+                items
+                    .into_iter()
+                    .map(Self::into_monty)
+                    .collect::<Result<Vec<_>, _>>()?,
             )),
             Self::Tuple { items } => Ok(MontyObject::Tuple(
-                items.into_iter().map(Self::into_monty).collect::<Result<Vec<_>, _>>()?,
+                items
+                    .into_iter()
+                    .map(Self::into_monty)
+                    .collect::<Result<Vec<_>, _>>()?,
             )),
             Self::NamedTuple {
                 type_name,
@@ -229,10 +243,16 @@ impl WireValue {
                     .collect::<Result<Vec<_>, String>>()?,
             )),
             Self::Set { items } => Ok(MontyObject::Set(
-                items.into_iter().map(Self::into_monty).collect::<Result<Vec<_>, _>>()?,
+                items
+                    .into_iter()
+                    .map(Self::into_monty)
+                    .collect::<Result<Vec<_>, _>>()?,
             )),
             Self::FrozenSet { items } => Ok(MontyObject::FrozenSet(
-                items.into_iter().map(Self::into_monty).collect::<Result<Vec<_>, _>>()?,
+                items
+                    .into_iter()
+                    .map(Self::into_monty)
+                    .collect::<Result<Vec<_>, _>>()?,
             )),
             Self::Exception { exc_type, arg } => Ok(MontyObject::Exception {
                 exc_type: exc_type
@@ -258,9 +278,13 @@ impl WireValue {
                     .into(),
                 frozen,
             }),
-            Self::Function(WireFunctionValue { name, docstring }) => Ok(MontyObject::Function { name, docstring }),
+            Self::Function(WireFunctionValue { name, docstring }) => {
+                Ok(MontyObject::Function { name, docstring })
+            }
             Self::Repr { .. } => Err("repr values cannot be used as Monty inputs".to_owned()),
-            Self::Cycle { .. } => Err("cycle placeholders cannot be used as Monty inputs".to_owned()),
+            Self::Cycle { .. } => {
+                Err("cycle placeholders cannot be used as Monty inputs".to_owned())
+            }
         }
     }
 }
@@ -567,7 +591,10 @@ mod tests {
             type_id: 7,
             field_names: vec!["enabled".to_owned(), "path".to_owned()],
             attrs: vec![
-                (MontyObject::String("enabled".to_owned()), MontyObject::Bool(true)),
+                (
+                    MontyObject::String("enabled".to_owned()),
+                    MontyObject::Bool(true),
+                ),
                 (
                     MontyObject::String("path".to_owned()),
                     MontyObject::Path("/config.json".to_owned()),
@@ -600,7 +627,10 @@ mod tests {
             arg: Some("bad input".to_owned()),
         };
 
-        let decoded = original.clone().into_monty().expect("exception should decode");
+        let decoded = original
+            .clone()
+            .into_monty()
+            .expect("exception should decode");
         assert_eq!(
             decoded,
             MontyObject::Exception {
@@ -632,7 +662,10 @@ mod tests {
         let decoded = wire.into_monty().expect("dict should decode");
         assert_eq!(
             decoded,
-            MontyObject::dict(vec![(MontyObject::Int(1), MontyObject::String("one".to_owned()))])
+            MontyObject::dict(vec![(
+                MontyObject::Int(1),
+                MontyObject::String("one".to_owned())
+            )])
         );
     }
 }
