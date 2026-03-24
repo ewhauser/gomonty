@@ -87,7 +87,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-fmt.Println(value.Raw())
+	fmt.Println(value.Raw())
 }
 ```
 
@@ -105,6 +105,58 @@ first:
 ```bash
 scripts/build-go-ffi.sh aarch64-apple-darwin
 ```
+
+## Benchmarks
+
+The Go benchmark suite mirrors the current upstream Monty benchmark cases so
+the two projects exercise the same scripts and expected outputs. The shared
+kitchen-sink workload is copied into [`testdata/bench_kitchen_sink.py`](./testdata/bench_kitchen_sink.py).
+
+After building the host archive, run the local Go-only benchmarks with:
+
+```bash
+go test -run '^$' -bench BenchmarkMonty -benchmem
+```
+
+This covers the parse-once/repeated-run benchmark cases plus
+`BenchmarkMontyEndToEnd` for parse-and-run in the loop.
+
+To compare `gomonty` against a local upstream Monty checkout on the same host,
+run:
+
+```bash
+python3 scripts/compare-benchmarks.py --upstream ../monty
+```
+
+The comparison script:
+
+- runs the Go benchmark suite and aggregates the median `ns/op` across three runs
+- runs the upstream Criterion `__monty` benchmarks
+- sets `PYO3_PYTHON` for the upstream run if the upstream checkout still expects a local `.venv/bin/python3`
+- prints a Markdown table suitable for pasting back into this README
+
+Current sample comparison from 2026-03-24 on `darwin/arm64` (`Apple M3 Max`),
+measured from `gomonty` `83788efac34f-dirty` against upstream Monty
+`982709bd52b1-dirty`:
+
+| Case | gomonty | raw monty | Ratio |
+| --- | ---: | ---: | ---: |
+| `add_two` | `4.083 us` | `739 ns` | `5.53x` |
+| `list_append` | `4.191 us` | `900 ns` | `4.66x` |
+| `loop_mod_13` | `43.064 us` | `39.176 us` | `1.10x` |
+| `kitchen_sink` | `9.219 us` | `4.283 us` | `2.15x` |
+| `func_call_kwargs` | `4.644 us` | `1.085 us` | `4.28x` |
+| `list_append_str` | `14.090 ms` | `14.902 ms` | `0.95x` |
+| `list_append_int` | `4.951 ms` | `5.158 ms` | `0.96x` |
+| `fib` | `22.299 ms` | `22.294 ms` | `1.00x` |
+| `list_comp` | `34.926 us` | `30.921 us` | `1.13x` |
+| `dict_comp` | `80.672 us` | `72.881 us` | `1.11x` |
+| `empty_tuples` | `2.813 ms` | `2.813 ms` | `1.00x` |
+| `pair_tuples` | `9.506 ms` | `9.952 ms` | `0.96x` |
+| `end_to_end` | `6.058 us` | `1.952 us` | `3.10x` |
+
+These numbers are host-specific. They compare the same benchmark scripts, but
+the Go side uses `testing.B` while upstream uses Criterion.
 
 ## Upstream Overrides
 
