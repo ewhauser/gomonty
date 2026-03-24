@@ -4,9 +4,6 @@ include_guard = "MONTY_GO_FFI_H"
 cpp_compat = true
 style = "both"
 
-[parse.expand]
-crates = ["monty-go-ffi"]
-
 [export]
 include = [
   "MontyGoBytes",
