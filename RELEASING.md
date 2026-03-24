@@ -1,0 +1,89 @@
+# Release Process
+
+## Upstream Monty Pin
+
+`crates/monty-go-ffi` builds against upstream Monty through the pinned git
+dependencies in the root `Cargo.toml`:
+
+- `monty`
+- `monty_type_checking`
+
+To bump the upstream dependency:
+
+1. Update the `rev` for both dependencies in `Cargo.toml`.
+2. Refresh `Cargo.lock` with `cargo update`.
+3. Rebuild the host archive and run local verification:
+
+```bash
+MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh aarch64-apple-darwin
+go test ./...
+```
+
+If you want to develop against a local Monty checkout instead of the pinned git
+dependency, use a temporary Cargo patch:
+
+```toml
+[patch."https://github.com/pydantic/monty.git"]
+monty = { path = "../monty/crates/monty" }
+monty_type_checking = { path = "../monty/crates/monty-type-checking" }
+```
+
+## Release-Prep Workflow
+
+Before tagging, run the `release-prep` GitHub Actions workflow. It:
+
+- builds the five tracked archives:
+  - `darwin/amd64`
+  - `darwin/arm64`
+  - `linux/amd64`
+  - `linux/arm64`
+  - `windows/amd64`
+- regenerates `internal/ffi/include/monty_go_ffi.h` exactly once
+- updates `internal/ffi/lib/...`
+- refreshes `internal/ffi/checksums.txt`
+- opens a release-prep branch and pull request automatically
+
+The workflow is the default path because the repo must contain the updated
+archives before a tag is created.
+
+Current CI coverage:
+
+- native cgo Go tests on Linux and macOS
+- build-only verification for `windows/amd64`
+
+## Why The Archives Must Be Committed Before Tagging
+
+Go module consumers fetch the tagged source tree. They do not fetch GitHub
+release assets as part of `go get`.
+
+Because the current cgo linking model points at the checked-in archives under
+`internal/ffi/lib/<target>`, the tag itself must already contain the correct
+archives and header. Release assets are optional convenience copies only.
+
+## Manual Archive Refresh
+
+If you need to refresh artifacts locally instead of using the workflow, build
+each supported target explicitly:
+
+```bash
+scripts/build-go-ffi.sh aarch64-apple-darwin
+scripts/build-go-ffi.sh x86_64-apple-darwin
+scripts/build-go-ffi.sh aarch64-unknown-linux-gnu
+scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
+scripts/build-go-ffi.sh x86_64-pc-windows-msvc
+```
+
+Commit the updated files:
+
+- `Cargo.lock`
+- `internal/ffi/include/monty_go_ffi.h`
+- `internal/ffi/lib/...`
+- `internal/ffi/checksums.txt`
+
+## Tagging
+
+After the release-prep PR is merged and CI is green:
+
+1. Create and push the release tag, for example `v0.0.8`.
+2. Optionally create a GitHub release and upload the same archives and checksum
+   file for convenience.

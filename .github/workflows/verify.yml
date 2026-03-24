@@ -1,0 +1,88 @@
+name: verify
+
+on:
+  push: {}
+  pull_request: {}
+
+permissions:
+  contents: read
+
+jobs:
+  go-pure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+
+      - name: Run CGO-disabled tests
+        run: CGO_ENABLED=0 go test ./...
+
+  platform-verify:
+    name: verify ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            run_go_tests: true
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            run_go_tests: true
+          - name: darwin-amd64
+            runner: macos-13
+            rust_target: x86_64-apple-darwin
+            run_go_tests: true
+          - name: darwin-arm64
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+            run_go_tests: true
+          - name: windows-amd64
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            run_go_tests: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build native archive
+        shell: bash
+        run: |
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+
+      - name: Run cgo-enabled Go tests
+        if: matrix.run_go_tests
+        run: go test ./...
+
+      - name: Windows verification note
+        if: ${{ !matrix.run_go_tests }}
+        run: echo "Windows uses build-only verification in CI; cgo-enabled go test is not run on this workflow."

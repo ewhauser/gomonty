@@ -1,0 +1,31 @@
+[package]
+name = "monty-go-ffi"
+description = "C ABI for Go bindings to the Monty sandboxed Python interpreter"
+readme = "../../README.md"
+version = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_go_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+monty = { workspace = true }
+monty_type_checking = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+postcard = { workspace = true }
+num-bigint = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true

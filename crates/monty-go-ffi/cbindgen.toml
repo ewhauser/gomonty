@@ -1,0 +1,20 @@
+language = "C"
+pragma_once = true
+include_guard = "MONTY_GO_FFI_H"
+cpp_compat = true
+style = "both"
+
+[parse]
+expand = true
+
+[export]
+include = [
+  "MontyGoBytes",
+  "MontyGoRunnerResult",
+  "MontyGoReplResult",
+  "MontyGoOpResult",
+  "MontyGoError",
+  "MontyGoRunner",
+  "MontyGoRepl",
+  "MontyGoProgress",
+]

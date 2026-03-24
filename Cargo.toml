@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = ["crates/monty-go-ffi"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.8"
+rust-version = "1.90"
+license = "MIT"
+authors = ["Evan Whauser"]
+categories = ["compilers", "emulators", "development-tools"]
+keywords = ["python", "interpreter", "sandbox", "embedded", "go"]
+homepage = "https://github.com/ewhauser/gomonty"
+repository = "https://github.com/ewhauser/gomonty"
+documentation = "https://github.com/ewhauser/gomonty"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[workspace.dependencies]
+# Upstream Monty pin. Keep both rev values aligned when bumping.
+monty = { git = "https://github.com/pydantic/monty.git", rev = "785fd0ecc4a943b2f972adae7849cb01f5b50f6f" }
+monty_type_checking = { git = "https://github.com/pydantic/monty.git", package = "monty_type_checking", rev = "785fd0ecc4a943b2f972adae7849cb01f5b50f6f" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+postcard = { version = "1.1", features = ["alloc"] }
+num-bigint = { version = "0.4", features = ["serde"] }
+pretty_assertions = "1.4"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
+
+[workspace.lints.rustdoc]
+invalid_codeblock_attributes = "allow"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+use_self = "warn"
+allow_attributes = "warn"
+undocumented_unsafe_blocks = "warn"
+redundant_clone = "warn"
+pedantic = { level = "warn", priority = -1 }
+cast_precision_loss = "allow"
+doc_markdown = "allow"
+match_same_arms = "allow"
+missing_errors_doc = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
