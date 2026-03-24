@@ -5,6 +5,7 @@ package ffi
 /*
 #cgo CFLAGS: -I${SRCDIR}/include
 #cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/lib/darwin_arm64 -lmonty_go_ffi
+#cgo linux LDFLAGS: -lm
 #cgo linux,amd64 LDFLAGS: -L${SRCDIR}/lib/linux_amd64 -lmonty_go_ffi
 #cgo linux,arm64 LDFLAGS: -L${SRCDIR}/lib/linux_arm64 -lmonty_go_ffi
 #cgo windows,amd64 LDFLAGS: -L${SRCDIR}/lib/windows_amd64 -lmonty_go_ffi
