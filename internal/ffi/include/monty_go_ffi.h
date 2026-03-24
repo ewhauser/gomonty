@@ -9,9 +9,67 @@
 #include <stdlib.h>
 
 /**
- * Current JSON schema version for the Go FFI.
+ * Current schema version for the Go FFI.
  */
 #define WIRE_VERSION 1
+
+#define WIRE_VALUE_NONE 0
+
+#define WIRE_VALUE_ELLIPSIS 1
+
+#define WIRE_VALUE_BOOL 2
+
+#define WIRE_VALUE_INT 3
+
+#define WIRE_VALUE_BIG_INT 4
+
+#define WIRE_VALUE_FLOAT 5
+
+#define WIRE_VALUE_STRING 6
+
+#define WIRE_VALUE_BYTES 7
+
+#define WIRE_VALUE_LIST 8
+
+#define WIRE_VALUE_TUPLE 9
+
+#define WIRE_VALUE_NAMED_TUPLE 10
+
+#define WIRE_VALUE_DICT 11
+
+#define WIRE_VALUE_SET 12
+
+#define WIRE_VALUE_FROZEN_SET 13
+
+#define WIRE_VALUE_EXCEPTION 14
+
+#define WIRE_VALUE_PATH 15
+
+#define WIRE_VALUE_DATACLASS 16
+
+#define WIRE_VALUE_FUNCTION 17
+
+#define WIRE_VALUE_REPR 18
+
+#define WIRE_VALUE_CYCLE 19
+
+#define WIRE_CALL_RESULT_RETURN 0
+
+#define WIRE_CALL_RESULT_EXCEPTION 1
+
+#define WIRE_CALL_RESULT_PENDING 2
+
+#define WIRE_LOOKUP_RESULT_VALUE 0
+
+#define WIRE_LOOKUP_RESULT_UNDEFINED 1
+
+#define WIRE_PROGRESS_FUNCTION_CALL 0
+
+#define WIRE_PROGRESS_NAME_LOOKUP 1
+
+#define WIRE_PROGRESS_FUTURE 2
+
+#define WIRE_PROGRESS_COMPLETE 3
 
 /**
  * Opaque error handle for the Go bindings.
