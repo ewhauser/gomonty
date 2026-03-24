@@ -1,7 +1,7 @@
 //! C ABI for Go bindings to Monty.
 //!
 //! The ABI deliberately keeps compiled runners, REPL sessions, and in-flight
-//! snapshots opaque. Structured values cross the boundary as versioned JSON
+//! snapshots opaque. Structured values cross the boundary as versioned binary
 //! payloads defined in [`wire`], while suspend/resume state stays in Rust-owned
 //! handles that the Go wrapper drives explicitly.
 
@@ -24,8 +24,11 @@ use monty::{
 };
 use monty_type_checking::{SourceFile, TypeCheckingDiagnostics, type_check};
 use wire::{
-    WireCallResult, WireCompileOptions, WireErrorSummary, WireFeedOptions, WireFutureResults,
-    WireLookupResult, WireProgressDescription, WireReplOptions, WireStartOptions, WireValue,
+    WIRE_CALL_RESULT_EXCEPTION, WIRE_CALL_RESULT_PENDING, WIRE_CALL_RESULT_RETURN,
+    WIRE_LOOKUP_RESULT_UNDEFINED, WIRE_LOOKUP_RESULT_VALUE, WIRE_PROGRESS_COMPLETE,
+    WIRE_PROGRESS_FUNCTION_CALL, WIRE_PROGRESS_FUTURE, WIRE_PROGRESS_NAME_LOOKUP, WireCallResult,
+    WireCompileOptions, WireErrorSummary, WireFeedOptions, WireFutureResults, WireLookupResult,
+    WireProgressPayload, WireReplOptions, WireStartOptions, WireValue,
 };
 
 /// Opaque runner handle for the Go bindings.
@@ -210,6 +213,8 @@ pub struct MontyGoReplResult {
 pub struct MontyGoOpResult {
     /// Progress handle on success.
     pub progress: *mut MontyGoProgress,
+    /// Decoded payload for the current progress state.
+    pub progress_payload: MontyGoBytes,
     /// Error handle on failure.
     pub error: *mut MontyGoError,
     /// Recovered REPL handle for REPL runtime errors.
@@ -252,19 +257,24 @@ impl MontyGoReplResult {
 
 impl MontyGoOpResult {
     fn ok(progress: StoredProgress, prints: String) -> Self {
-        Self {
-            progress: Box::into_raw(Box::new(MontyGoProgress {
-                inner: Some(progress),
-            })),
-            error: ptr::null_mut(),
-            repl: ptr::null_mut(),
-            prints: MontyGoBytes::from_vec(prints.into_bytes()),
+        match encode_wire(&progress.describe()) {
+            Ok(progress_payload) => Self {
+                progress: Box::into_raw(Box::new(MontyGoProgress {
+                    inner: Some(progress),
+                })),
+                progress_payload,
+                error: ptr::null_mut(),
+                repl: ptr::null_mut(),
+                prints: MontyGoBytes::from_vec(prints.into_bytes()),
+            },
+            Err(error) => Self::err(error, None, prints),
         }
     }
 
     fn err(error: FfiError, repl: Option<MontyGoRepl>, prints: String) -> Self {
         Self {
             progress: ptr::null_mut(),
+            progress_payload: MontyGoBytes::empty(),
             error: Box::into_raw(Box::new(MontyGoError { inner: error })),
             repl: repl
                 .map(|repl| Box::into_raw(Box::new(repl)))
@@ -349,7 +359,7 @@ impl FfiError {
 }
 
 impl StoredProgress {
-    fn describe(&self) -> WireProgressDescription {
+    fn describe(&self) -> WireProgressPayload {
         match self {
             Self::RunNoLimit {
                 progress,
@@ -401,9 +411,10 @@ fn describe_run_progress<T: ResourceTracker>(
     progress: &RunProgress<T>,
     script_name: &str,
     is_repl: bool,
-) -> WireProgressDescription {
+) -> WireProgressPayload {
     match progress {
-        RunProgress::FunctionCall(call) => WireProgressDescription::FunctionCall {
+        RunProgress::FunctionCall(call) => WireProgressPayload {
+            variant: WIRE_PROGRESS_FUNCTION_CALL,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
@@ -420,8 +431,10 @@ fn describe_run_progress<T: ResourceTracker>(
                 })
                 .collect(),
             call_id: call.call_id,
+            ..WireProgressPayload::default()
         },
-        RunProgress::OsCall(call) => WireProgressDescription::FunctionCall {
+        RunProgress::OsCall(call) => WireProgressPayload {
+            variant: WIRE_PROGRESS_FUNCTION_CALL,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
@@ -438,24 +451,31 @@ fn describe_run_progress<T: ResourceTracker>(
                 })
                 .collect(),
             call_id: call.call_id,
+            ..WireProgressPayload::default()
         },
-        RunProgress::NameLookup(lookup) => WireProgressDescription::NameLookup {
+        RunProgress::NameLookup(lookup) => WireProgressPayload {
+            variant: WIRE_PROGRESS_NAME_LOOKUP,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
             variable_name: lookup.name.clone(),
+            ..WireProgressPayload::default()
         },
-        RunProgress::ResolveFutures(state) => WireProgressDescription::Future {
+        RunProgress::ResolveFutures(state) => WireProgressPayload {
+            variant: WIRE_PROGRESS_FUTURE,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
             pending_call_ids: state.pending_call_ids().to_vec(),
+            ..WireProgressPayload::default()
         },
-        RunProgress::Complete(output) => WireProgressDescription::Complete {
+        RunProgress::Complete(output) => WireProgressPayload {
+            variant: WIRE_PROGRESS_COMPLETE,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
-            output: WireValue::from_monty(output),
+            output: Some(WireValue::from_monty(output)),
+            ..WireProgressPayload::default()
         },
     }
 }
@@ -464,9 +484,10 @@ fn describe_repl_progress<T: ResourceTracker>(
     progress: &ReplProgress<T>,
     script_name: &str,
     is_repl: bool,
-) -> WireProgressDescription {
+) -> WireProgressPayload {
     match progress {
-        ReplProgress::FunctionCall(call) => WireProgressDescription::FunctionCall {
+        ReplProgress::FunctionCall(call) => WireProgressPayload {
+            variant: WIRE_PROGRESS_FUNCTION_CALL,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
@@ -483,8 +504,10 @@ fn describe_repl_progress<T: ResourceTracker>(
                 })
                 .collect(),
             call_id: call.call_id,
+            ..WireProgressPayload::default()
         },
-        ReplProgress::OsCall(call) => WireProgressDescription::FunctionCall {
+        ReplProgress::OsCall(call) => WireProgressPayload {
+            variant: WIRE_PROGRESS_FUNCTION_CALL,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
@@ -501,24 +524,31 @@ fn describe_repl_progress<T: ResourceTracker>(
                 })
                 .collect(),
             call_id: call.call_id,
+            ..WireProgressPayload::default()
         },
-        ReplProgress::NameLookup(lookup) => WireProgressDescription::NameLookup {
+        ReplProgress::NameLookup(lookup) => WireProgressPayload {
+            variant: WIRE_PROGRESS_NAME_LOOKUP,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
             variable_name: lookup.name.clone(),
+            ..WireProgressPayload::default()
         },
-        ReplProgress::ResolveFutures(state) => WireProgressDescription::Future {
+        ReplProgress::ResolveFutures(state) => WireProgressPayload {
+            variant: WIRE_PROGRESS_FUTURE,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
             pending_call_ids: state.pending_call_ids().to_vec(),
+            ..WireProgressPayload::default()
         },
-        ReplProgress::Complete { value, .. } => WireProgressDescription::Complete {
+        ReplProgress::Complete { value, .. } => WireProgressPayload {
+            variant: WIRE_PROGRESS_COMPLETE,
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
-            output: WireValue::from_monty(value),
+            output: Some(WireValue::from_monty(value)),
+            ..WireProgressPayload::default()
         },
     }
 }
@@ -553,14 +583,14 @@ fn extract_feed_inputs(
         .collect()
 }
 
-fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, FfiError> {
-    serde_json::from_slice(bytes).map_err(|e| FfiError::Api(format!("invalid JSON payload: {e}")))
+fn decode_wire<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, FfiError> {
+    rmp_serde::from_slice(bytes).map_err(|e| FfiError::Api(format!("invalid wire payload: {e}")))
 }
 
-fn encode_json<T: serde::Serialize>(value: &T) -> Result<MontyGoBytes, FfiError> {
-    serde_json::to_vec(value)
+fn encode_wire<T: serde::Serialize>(value: &T) -> Result<MontyGoBytes, FfiError> {
+    rmp_serde::to_vec_named(value)
         .map(MontyGoBytes::from_vec)
-        .map_err(|e| FfiError::Api(format!("failed to encode JSON payload: {e}")))
+        .map_err(|e| FfiError::Api(format!("failed to encode wire payload: {e}")))
 }
 
 unsafe fn slice_from_raw<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
@@ -588,25 +618,34 @@ fn decode_utf8<'a>(bytes: &'a [u8], field_name: &str) -> Result<&'a str, FfiErro
 }
 
 fn decode_call_result(result: WireCallResult) -> Result<ExtFunctionResult, FfiError> {
-    match result {
-        WireCallResult::Return { value } => value
+    match result.kind {
+        WIRE_CALL_RESULT_RETURN => result
+            .value
+            .ok_or_else(|| FfiError::Api("missing return value".to_owned()))?
             .into_monty()
             .map(ExtFunctionResult::Return)
             .map_err(FfiError::Api),
-        WireCallResult::Exception { exc_type, arg } => Ok(ExtFunctionResult::Error(
-            MontyException::new(parse_exc_type(&exc_type)?, arg),
-        )),
-        WireCallResult::Pending => Ok(ExtFunctionResult::Future(0)),
+        WIRE_CALL_RESULT_EXCEPTION => Ok(ExtFunctionResult::Error(MontyException::new(
+            parse_exc_type(&result.exc_type)?,
+            result.arg,
+        ))),
+        WIRE_CALL_RESULT_PENDING => Ok(ExtFunctionResult::Future(0)),
+        other => Err(FfiError::Api(format!("unknown call result kind: {other}"))),
     }
 }
 
 fn decode_lookup_result(result: WireLookupResult) -> Result<NameLookupResult, FfiError> {
-    match result {
-        WireLookupResult::Value { value } => value
+    match result.kind {
+        WIRE_LOOKUP_RESULT_VALUE => result
+            .value
+            .ok_or_else(|| FfiError::Api("missing lookup value".to_owned()))?
             .into_monty()
             .map(NameLookupResult::Value)
             .map_err(FfiError::Api),
-        WireLookupResult::Undefined => Ok(NameLookupResult::Undefined),
+        WIRE_LOOKUP_RESULT_UNDEFINED => Ok(NameLookupResult::Undefined),
+        other => Err(FfiError::Api(format!(
+            "unknown lookup result kind: {other}"
+        ))),
     }
 }
 
@@ -1164,9 +1203,9 @@ pub extern "C" fn monty_go_error_json(error: *const MontyGoError) -> MontyGoByte
     }
     // SAFETY: caller passes a valid handle pointer
     let error = unsafe { &*error };
-    encode_json(&error.inner.summary()).unwrap_or_else(|ffi_error| {
-        encode_json(&ffi_error.summary()).unwrap_or_else(|_| MontyGoBytes::empty())
-    })
+    serde_json::to_vec(&error.inner.summary())
+        .map(MontyGoBytes::from_vec)
+        .unwrap_or_else(|_| MontyGoBytes::empty())
 }
 
 #[unsafe(no_mangle)]
@@ -1209,7 +1248,7 @@ pub extern "C" fn monty_go_runner_new(
                 )));
             }
         };
-        let options: WireCompileOptions = match decode_json(options) {
+        let options: WireCompileOptions = match decode_wire(options) {
             Ok(options) => options,
             Err(error) => return MontyGoRunnerResult::err(error),
         };
@@ -1377,7 +1416,7 @@ pub extern "C" fn monty_go_runner_start(
         // SAFETY: caller passes a valid handle pointer
         let runner = unsafe { &*runner };
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
-        let options: WireStartOptions = match decode_json(options) {
+        let options: WireStartOptions = match decode_wire(options) {
             Ok(options) => options,
             Err(error) => return MontyGoOpResult::err(error, None, String::new()),
         };
@@ -1395,7 +1434,7 @@ pub extern "C" fn monty_go_repl_new(
 ) -> MontyGoReplResult {
     catch_repl_result(|| {
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
-        let options: WireReplOptions = match decode_json(options) {
+        let options: WireReplOptions = match decode_wire(options) {
             Ok(options) => options,
             Err(error) => return MontyGoReplResult::err(error),
         };
@@ -1509,7 +1548,7 @@ pub extern "C" fn monty_go_repl_feed_start(
         let repl = unsafe { &mut *repl };
         let code = unsafe { slice_from_raw(code_ptr, code_len) };
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
-        let options: WireFeedOptions = match decode_json(options) {
+        let options: WireFeedOptions = match decode_wire(options) {
             Ok(options) => options,
             Err(error) => return MontyGoOpResult::err(error, None, String::new()),
         };
@@ -1550,7 +1589,7 @@ pub extern "C" fn monty_go_progress_describe(
             }
             return MontyGoBytes::empty();
         };
-        match encode_json(&inner.describe()) {
+        match encode_wire(&inner.describe()) {
             Ok(bytes) => bytes,
             Err(error) => {
                 if !error_out.is_null() {
@@ -1661,7 +1700,7 @@ pub extern "C" fn monty_go_progress_resume_call(
         }
         let progress = unsafe { &mut *progress };
         let result = unsafe { slice_from_raw(result_ptr, result_len) };
-        let result: WireCallResult = match decode_json(result) {
+        let result: WireCallResult = match decode_wire(result) {
             Ok(result) => result,
             Err(error) => return MontyGoOpResult::err(error, None, String::new()),
         };
@@ -1723,7 +1762,7 @@ pub extern "C" fn monty_go_progress_resume_lookup(
         }
         let progress = unsafe { &mut *progress };
         let result = unsafe { slice_from_raw(result_ptr, result_len) };
-        let result: WireLookupResult = match decode_json(result) {
+        let result: WireLookupResult = match decode_wire(result) {
             Ok(result) => result,
             Err(error) => return MontyGoOpResult::err(error, None, String::new()),
         };
@@ -1785,7 +1824,7 @@ pub extern "C" fn monty_go_progress_resume_futures(
         }
         let progress = unsafe { &mut *progress };
         let results = unsafe { slice_from_raw(results_ptr, results_len) };
-        let results: WireFutureResults = match decode_json(results) {
+        let results: WireFutureResults = match decode_wire(results) {
             Ok(results) => results,
             Err(error) => return MontyGoOpResult::err(error, None, String::new()),
         };

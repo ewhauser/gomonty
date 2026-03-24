@@ -138,6 +138,30 @@ go test -run '^$' -bench BenchmarkMonty -benchmem
 This covers the parse-once/repeated-run benchmark cases plus
 `BenchmarkMontyEndToEnd` for parse-and-run in the loop.
 
+There are also Go-specific benchmark suites for wrapper overhead:
+
+```bash
+go test -run '^$' -bench BenchmarkMontyCallbacks -benchmem
+go test -run '^$' -bench BenchmarkMontyDecompose -benchmem
+```
+
+These add:
+
+- callback-heavy runs with repeated external function and OS handler calls
+- low-level decomposition benchmarks for compile-only, dump/load, start-to-first-progress, name lookup, call resume, and pending resume paths
+
+To capture CPU and allocation profiles for the representative hot paths, run:
+
+```bash
+scripts/profile-benchmarks.sh
+```
+
+By default the script writes profiles and `pprof -top` summaries to `/tmp/gomonty-bench-profiles` for:
+
+- `BenchmarkMontyEndToEnd`
+- `BenchmarkMonty/list_append_int`
+- `BenchmarkMontyCallbacks/external_loop`
+
 To compare `gomonty` against a local upstream Monty checkout on the same host,
 run:
 
@@ -153,24 +177,24 @@ The comparison script:
 - prints a Markdown table suitable for pasting back into this README
 
 Current sample comparison from 2026-03-24 on `darwin/arm64` (`Apple M3 Max`),
-measured from `gomonty` `83788efac34f-dirty` against upstream Monty
+measured from `gomonty` `dddae9616d8b-dirty` against upstream Monty
 `982709bd52b1-dirty`:
 
 | Case | gomonty | raw monty | Ratio |
 | --- | ---: | ---: | ---: |
-| `add_two` | `4.083 us` | `739 ns` | `5.53x` |
-| `list_append` | `4.191 us` | `900 ns` | `4.66x` |
-| `loop_mod_13` | `43.064 us` | `39.176 us` | `1.10x` |
-| `kitchen_sink` | `9.219 us` | `4.283 us` | `2.15x` |
-| `func_call_kwargs` | `4.644 us` | `1.085 us` | `4.28x` |
-| `list_append_str` | `14.090 ms` | `14.902 ms` | `0.95x` |
-| `list_append_int` | `4.951 ms` | `5.158 ms` | `0.96x` |
-| `fib` | `22.299 ms` | `22.294 ms` | `1.00x` |
-| `list_comp` | `34.926 us` | `30.921 us` | `1.13x` |
-| `dict_comp` | `80.672 us` | `72.881 us` | `1.11x` |
-| `empty_tuples` | `2.813 ms` | `2.813 ms` | `1.00x` |
-| `pair_tuples` | `9.506 ms` | `9.952 ms` | `0.96x` |
-| `end_to_end` | `6.058 us` | `1.952 us` | `3.10x` |
+| `add_two` | `2.916 us` | `721 ns` | `4.04x` |
+| `list_append` | `3.204 us` | `853 ns` | `3.76x` |
+| `loop_mod_13` | `42.157 us` | `37.906 us` | `1.11x` |
+| `kitchen_sink` | `7.942 us` | `4.035 us` | `1.97x` |
+| `func_call_kwargs` | `3.501 us` | `1.045 us` | `3.35x` |
+| `list_append_str` | `14.200 ms` | `14.557 ms` | `0.98x` |
+| `list_append_int` | `4.855 ms` | `4.976 ms` | `0.98x` |
+| `fib` | `20.547 ms` | `21.204 ms` | `0.97x` |
+| `list_comp` | `32.750 us` | `29.786 us` | `1.10x` |
+| `dict_comp` | `78.033 us` | `69.671 us` | `1.12x` |
+| `empty_tuples` | `2.664 ms` | `2.794 ms` | `0.95x` |
+| `pair_tuples` | `8.917 ms` | `9.111 ms` | `0.98x` |
+| `end_to_end` | `5.240 us` | `1.891 us` | `2.77x` |
 
 These numbers are host-specific. They compare the same benchmark scripts, but
 the Go side uses `testing.B` while upstream uses Criterion.

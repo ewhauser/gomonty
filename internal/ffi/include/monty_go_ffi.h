@@ -70,6 +70,10 @@ typedef struct MontyGoOpResult {
    */
   struct MontyGoProgress *progress;
   /**
+   * Decoded payload for the current progress state.
+   */
+  struct MontyGoBytes progress_payload;
+  /**
    * Error handle on failure.
    */
   struct MontyGoError *error;
