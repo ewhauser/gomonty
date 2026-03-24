@@ -38,7 +38,6 @@ usage: scripts/build-go-ffi.sh <target-triple>
 
 Supported targets:
   aarch64-apple-darwin
-  x86_64-apple-darwin
   aarch64-unknown-linux-gnu
   x86_64-unknown-linux-gnu
   x86_64-pc-windows-msvc
@@ -50,10 +49,6 @@ target="$1"
 case "$target" in
   aarch64-apple-darwin)
     lib_dir="$LIB_ROOT/darwin_arm64"
-    lib_name="libmonty_go_ffi.a"
-    ;;
-  x86_64-apple-darwin)
-    lib_dir="$LIB_ROOT/darwin_amd64"
     lib_name="libmonty_go_ffi.a"
     ;;
   aarch64-unknown-linux-gnu)

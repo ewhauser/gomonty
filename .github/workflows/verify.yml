@@ -37,10 +37,6 @@ jobs:
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
             run_go_tests: true
-          - name: darwin-amd64
-            runner: macos-13
-            rust_target: x86_64-apple-darwin
-            run_go_tests: true
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin

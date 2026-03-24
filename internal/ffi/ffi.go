@@ -1,8 +1,9 @@
+//go:build cgo && !(darwin && amd64)
+
 package ffi
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/include
-#cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/lib/darwin_amd64 -lmonty_go_ffi
 #cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/lib/darwin_arm64 -lmonty_go_ffi
 #cgo linux,amd64 LDFLAGS: -L${SRCDIR}/lib/linux_amd64 -lmonty_go_ffi
 #cgo linux,arm64 LDFLAGS: -L${SRCDIR}/lib/linux_arm64 -lmonty_go_ffi

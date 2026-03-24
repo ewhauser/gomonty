@@ -1,10 +1,10 @@
-//go:build !cgo
+//go:build !cgo || (darwin && amd64)
 
 package ffi
 
 import "encoding/json"
 
-const unavailableMessage = "monty native bindings are unavailable: enable cgo and provide the bundled monty_go_ffi library"
+const unavailableMessage = "monty native bindings are unavailable: enable cgo and provide the bundled monty_go_ffi library; darwin/amd64 is not supported"
 
 // Runner is the non-cgo stub for a compiled runner handle.
 type Runner struct{}

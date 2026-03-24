@@ -33,7 +33,6 @@ monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 Before tagging, run the `release-prep` GitHub Actions workflow. It:
 
 - builds the five tracked archives:
-  - `darwin/amd64`
   - `darwin/arm64`
   - `linux/amd64`
   - `linux/arm64`
@@ -67,7 +66,6 @@ each supported target explicitly:
 
 ```bash
 scripts/build-go-ffi.sh aarch64-apple-darwin
-scripts/build-go-ffi.sh x86_64-apple-darwin
 scripts/build-go-ffi.sh aarch64-unknown-linux-gnu
 scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
 scripts/build-go-ffi.sh x86_64-pc-windows-msvc

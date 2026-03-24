@@ -5,7 +5,6 @@ Go bindings.
 
 Expected layout:
 
-- `darwin_amd64/libmonty_go_ffi.a`
 - `darwin_arm64/libmonty_go_ffi.a`
 - `linux_amd64/libmonty_go_ffi.a`
 - `linux_arm64/libmonty_go_ffi.a`

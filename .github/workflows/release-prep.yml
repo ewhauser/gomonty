@@ -72,11 +72,6 @@ jobs:
             rust_target: aarch64-unknown-linux-gnu
             artifact_name: ffi-linux-arm64
             artifact_path: internal/ffi/lib/linux_arm64/libmonty_go_ffi.a
-          - name: darwin-amd64
-            runner: macos-13
-            rust_target: x86_64-apple-darwin
-            artifact_name: ffi-darwin-amd64
-            artifact_path: internal/ffi/lib/darwin_amd64/libmonty_go_ffi.a
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
@@ -150,7 +145,6 @@ jobs:
         run: |
           mkdir -p \
             internal/ffi/include \
-            internal/ffi/lib/darwin_amd64 \
             internal/ffi/lib/darwin_arm64 \
             internal/ffi/lib/linux_amd64 \
             internal/ffi/lib/linux_arm64 \
@@ -160,14 +154,12 @@ jobs:
           cp .artifacts/cargo-lock/Cargo.lock Cargo.lock
           cp .artifacts/ffi-linux-amd64/libmonty_go_ffi.a internal/ffi/lib/linux_amd64/libmonty_go_ffi.a
           cp .artifacts/ffi-linux-arm64/libmonty_go_ffi.a internal/ffi/lib/linux_arm64/libmonty_go_ffi.a
-          cp .artifacts/ffi-darwin-amd64/libmonty_go_ffi.a internal/ffi/lib/darwin_amd64/libmonty_go_ffi.a
           cp .artifacts/ffi-darwin-arm64/libmonty_go_ffi.a internal/ffi/lib/darwin_arm64/libmonty_go_ffi.a
           cp .artifacts/ffi-windows-amd64/monty_go_ffi.lib internal/ffi/lib/windows_amd64/monty_go_ffi.lib
 
           sha256sum \
             Cargo.lock \
             internal/ffi/include/monty_go_ffi.h \
-            internal/ffi/lib/darwin_amd64/libmonty_go_ffi.a \
             internal/ffi/lib/darwin_arm64/libmonty_go_ffi.a \
             internal/ffi/lib/linux_amd64/libmonty_go_ffi.a \
             internal/ffi/lib/linux_arm64/libmonty_go_ffi.a \

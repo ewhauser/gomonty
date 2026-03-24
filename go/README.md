@@ -15,7 +15,6 @@ It is also `cgo`-backed. Builds succeed only when the module includes a bundled 
 
 The code is wired for these targets:
 
-- `darwin/amd64`
 - `darwin/arm64`
 - `linux/amd64`
 - `linux/arm64`
