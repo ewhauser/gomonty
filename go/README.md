@@ -16,8 +16,10 @@ It is also `cgo`-backed. Builds succeed only when the module includes a bundled 
 The code is wired for these targets:
 
 - `darwin/arm64`
-- `linux/amd64`
-- `linux/arm64`
+- `linux/amd64` with GNU/glibc archives by default
+- `linux/arm64` with GNU/glibc archives by default
+- `linux/amd64` with musl archives when built with `-tags musl`
+- `linux/arm64` with musl archives when built with `-tags musl`
 - `windows/amd64`
 
 If the archive for your target is missing, `go build` or `go test` will fail at link time.
@@ -27,6 +29,7 @@ If the archive for your target is missing, `go build` or `go test` will fail at 
 - Go 1.24+
 - `CGO_ENABLED=1`
 - a repo/tag that includes the native archive for your target
+- `-tags musl` when building on Alpine or another musl-based Linux environment
 
 ## Install
 

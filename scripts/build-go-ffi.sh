@@ -39,7 +39,9 @@ usage: scripts/build-go-ffi.sh <target-triple>
 Supported targets:
   aarch64-apple-darwin
   aarch64-unknown-linux-gnu
+  aarch64-unknown-linux-musl
   x86_64-unknown-linux-gnu
+  x86_64-unknown-linux-musl
   x86_64-pc-windows-msvc
 EOF
   exit 1
@@ -55,8 +57,16 @@ case "$target" in
     lib_dir="$LIB_ROOT/linux_arm64"
     lib_name="libmonty_go_ffi.a"
     ;;
+  aarch64-unknown-linux-musl)
+    lib_dir="$LIB_ROOT/linux_arm64_musl"
+    lib_name="libmonty_go_ffi.a"
+    ;;
   x86_64-unknown-linux-gnu)
     lib_dir="$LIB_ROOT/linux_amd64"
+    lib_name="libmonty_go_ffi.a"
+    ;;
+  x86_64-unknown-linux-musl)
+    lib_dir="$LIB_ROOT/linux_amd64_musl"
     lib_name="libmonty_go_ffi.a"
     ;;
   x86_64-pc-windows-msvc)

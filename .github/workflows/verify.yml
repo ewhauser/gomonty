@@ -33,18 +33,32 @@ jobs:
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
             run_go_tests: true
+            build_only_note: ""
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
             run_go_tests: true
+            build_only_note: ""
+          - name: linux-musl-amd64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+            run_go_tests: false
+            build_only_note: "Musl/Alpine archives are build-verified in CI; native cgo go test is not run on this workflow."
+          - name: linux-musl-arm64
+            runner: ubuntu-latest
+            rust_target: aarch64-unknown-linux-musl
+            run_go_tests: false
+            build_only_note: "Musl/Alpine archives are build-verified in CI; native cgo go test is not run on this workflow."
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
             run_go_tests: true
+            build_only_note: ""
           - name: windows-amd64
             runner: windows-latest
             rust_target: x86_64-pc-windows-msvc
             run_go_tests: false
+            build_only_note: "Windows uses build-only verification in CI; native cgo go test is not run on this workflow."
 
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +93,6 @@ jobs:
         if: matrix.run_go_tests
         run: go test ./...
 
-      - name: Windows verification note
+      - name: Build-only verification note
         if: ${{ !matrix.run_go_tests }}
-        run: echo "Windows uses build-only verification in CI; cgo-enabled go test is not run on this workflow."
+        run: echo "${{ matrix.build_only_note }}"

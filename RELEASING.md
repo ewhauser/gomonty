@@ -32,10 +32,12 @@ monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 
 Before tagging, run the `release-prep` GitHub Actions workflow. It:
 
-- builds the five tracked archives:
+- builds the tracked archives:
   - `darwin/arm64`
-  - `linux/amd64`
-  - `linux/arm64`
+  - `linux/amd64` (GNU/glibc)
+  - `linux/arm64` (GNU/glibc)
+  - `linux/amd64` (musl/Alpine)
+  - `linux/arm64` (musl/Alpine)
   - `windows/amd64`
 - regenerates `internal/ffi/include/monty_go_ffi.h` exactly once
 - updates `internal/ffi/lib/...`
@@ -48,6 +50,7 @@ archives before a tag is created.
 Current CI coverage:
 
 - native cgo Go tests on Linux and macOS
+- build verification for musl Linux archives
 - build-only verification for `windows/amd64`
 
 ## Why The Archives Must Be Committed Before Tagging
@@ -67,7 +70,9 @@ each supported target explicitly:
 ```bash
 scripts/build-go-ffi.sh aarch64-apple-darwin
 scripts/build-go-ffi.sh aarch64-unknown-linux-gnu
+scripts/build-go-ffi.sh aarch64-unknown-linux-musl
 scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
+scripts/build-go-ffi.sh x86_64-unknown-linux-musl
 scripts/build-go-ffi.sh x86_64-pc-windows-msvc
 ```
 

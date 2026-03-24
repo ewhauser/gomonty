@@ -10,6 +10,7 @@
 - Upstream Monty source: pinned in the root [`Cargo.toml`](./Cargo.toml)
 - Native archives: checked into `internal/ffi/lib/<target>`
 - Generated header: checked into `internal/ffi/include/monty_go_ffi.h`
+- Alpine/musl builds use a separate `musl` Go build tag and musl-specific archives
 
 Tagged source trees must already contain the native archives required by the current cgo linking model. GitHub release assets are optional convenience copies, not the source of truth for Go module consumers.
 
@@ -25,7 +26,9 @@ Tagged source trees must already contain the native archives required by the cur
 
 The Go package remains cgo-backed. Normal cgo builds link against a prebuilt static archive for the current target from `internal/ffi/lib/<target>`.
 
-The `verify` workflow runs cgo-enabled Go tests on native Linux and macOS runners. Windows is currently build-only verification in CI, while still producing the tracked `windows/amd64` archive.
+Default Linux builds target the GNU/glibc archives. Alpine and other musl-based Linux builds must opt into the musl archive family with the `musl` Go build tag.
+
+The `verify` workflow runs cgo-enabled Go tests on native Linux and macOS runners. Windows is currently build-only verification in CI, while still producing the tracked `windows/amd64` archive. Musl archives are currently build-verified rather than executed in CI.
 
 To build or refresh the host archive:
 
@@ -42,6 +45,13 @@ Requirements:
 - `cbindgen` only when regenerating `internal/ffi/include/monty_go_ffi.h`
 
 For repeat builds where the checked-in header does not need to change, set `MONTY_GO_FFI_SKIP_HEADER=1`.
+
+For Alpine or another musl-based Linux environment:
+
+```bash
+scripts/build-go-ffi.sh x86_64-unknown-linux-musl
+go test -tags musl ./...
+```
 
 ## Consumer Example
 
@@ -104,6 +114,13 @@ first:
 
 ```bash
 scripts/build-go-ffi.sh aarch64-apple-darwin
+```
+
+For Alpine or musl-based Linux consumers, also add the `musl` build tag when
+building or testing your application:
+
+```bash
+go build -tags musl ./...
 ```
 
 ## Benchmarks
