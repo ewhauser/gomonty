@@ -198,6 +198,10 @@ func (r *Runner) TypeCheck(prefix string) error {
 
 // Start begins low-level runner execution.
 func (r *Runner) Start(ctx context.Context, opts StartOptions) (Progress, error) {
+	return r.start(ctx, opts, nil)
+}
+
+func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallback) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -218,15 +222,15 @@ func (r *Runner) Start(ctx context.Context, opts StartOptions) (Progress, error)
 	}
 
 	result := handle.Start(payload)
-	return consumeOpResult(result, nil, nil)
+	return consumeOpResult(result, nil, print)
 }
 
 // Run executes the runner through the high-level host callback loop.
 func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
-	progress, err := r.Start(ctx, StartOptions{
+	progress, err := r.start(ctx, StartOptions{
 		Inputs: opts.Inputs,
 		Limits: opts.Limits,
-	})
+	}, opts.Print)
 	if err != nil {
 		return Value{}, err
 	}
@@ -254,6 +258,10 @@ func (r *Repl) Dump() ([]byte, error) {
 
 // FeedStart begins low-level REPL snippet execution.
 func (r *Repl) FeedStart(ctx context.Context, code string, opts FeedStartOptions) (Progress, error) {
+	return r.feedStart(ctx, code, opts, nil)
+}
+
+func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions, print PrintCallback) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -275,7 +283,7 @@ func (r *Repl) FeedStart(ctx context.Context, code string, opts FeedStartOptions
 
 	result := handle.FeedStart([]byte(code), payload)
 	handle.Close()
-	progress, consumeErr := consumeOpResult(result, r.state, nil)
+	progress, consumeErr := consumeOpResult(result, r.state, print)
 	if consumeErr != nil {
 		return nil, consumeErr
 	}
@@ -284,7 +292,7 @@ func (r *Repl) FeedStart(ctx context.Context, code string, opts FeedStartOptions
 
 // FeedRun executes a REPL snippet through the high-level host callback loop.
 func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Value, error) {
-	progress, err := r.FeedStart(ctx, code, FeedStartOptions{Inputs: opts.Inputs})
+	progress, err := r.feedStart(ctx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print)
 	if err != nil {
 		return Value{}, err
 	}
