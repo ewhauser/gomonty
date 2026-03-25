@@ -15,6 +15,14 @@ func closeTestRunner(runner *Runner) {
 	}
 }
 
+func closeTestRepl(repl *Repl) {
+	if repl == nil || repl.state == nil {
+		return
+	}
+
+	repl.state.clear()
+}
+
 func closeTestProgress(progress Progress) {
 	switch current := progress.(type) {
 	case *Snapshot:
