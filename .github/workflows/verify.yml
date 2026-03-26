@@ -19,6 +19,26 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.mod
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build native shared library
+        shell: bash
+        run: |
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
+
       - name: Run CGO-disabled tests
         run: CGO_ENABLED=0 go test ./...
 
