@@ -1,16 +1,16 @@
-# Bundled Native Archives
+# Bundled Shared Libraries
 
-This directory stores the prebuilt `monty_go_ffi` static libraries used by the
-Go bindings.
+This directory stores the prebuilt `monty_go_ffi` shared libraries embedded by
+the Go bindings.
 
 Expected layout:
 
-- `darwin_arm64/libmonty_go_ffi.a`
-- `linux_amd64/libmonty_go_ffi.a`
-- `linux_arm64/libmonty_go_ffi.a`
-- `linux_amd64_musl/libmonty_go_ffi.a`
-- `linux_arm64_musl/libmonty_go_ffi.a`
-- `windows_amd64/monty_go_ffi.lib`
+- `darwin_arm64/libmonty_go_ffi.dylib`
+- `linux_amd64/libmonty_go_ffi.so`
+- `linux_arm64/libmonty_go_ffi.so`
+- `linux_amd64_musl/libmonty_go_ffi.so`
+- `linux_arm64_musl/libmonty_go_ffi.so`
+- `windows_amd64/monty_go_ffi.dll`
 
 Refresh a target artifact with:
 

@@ -12,11 +12,11 @@ To bump the upstream dependency:
 
 1. Update the `rev` for both dependencies in `Cargo.toml`.
 2. Refresh `Cargo.lock` with `cargo update`.
-3. Rebuild the host archive and run local verification:
+3. Rebuild the host shared library and run local verification:
 
 ```bash
 MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh aarch64-apple-darwin
-go test ./...
+CGO_ENABLED=0 go test ./...
 ```
 
 If you want to develop against a local Monty checkout instead of the pinned git
@@ -32,7 +32,7 @@ monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 
 Before tagging, run the `release-prep` GitHub Actions workflow. It:
 
-- builds the tracked archives:
+- builds the tracked shared libraries:
   - `darwin/arm64`
   - `linux/amd64` (GNU/glibc)
   - `linux/arm64` (GNU/glibc)
@@ -45,27 +45,27 @@ Before tagging, run the `release-prep` GitHub Actions workflow. It:
 - opens a release-prep branch and pull request automatically
 
 The workflow is the default path because the repo must contain the updated
-archives before a tag is created.
+shared libraries before a tag is created.
 
 Current CI coverage:
 
-- native cgo Go tests on Linux and macOS
-- build verification for musl Linux archives
-- build-only verification for `windows/amd64`
+- native `CGO_ENABLED=0` Go tests on Linux, macOS, and Windows
+- build verification for musl Linux shared libraries
 
-## Why The Archives Must Be Committed Before Tagging
+## Why The Shared Libraries Must Be Committed Before Tagging
 
 Go module consumers fetch the tagged source tree. They do not fetch GitHub
 release assets as part of `go get`.
 
-Because the current cgo linking model points at the checked-in archives under
+Because the current runtime loader embeds the checked-in shared libraries under
 `internal/ffi/lib/<target>`, the tag itself must already contain the correct
-archives and header. Release assets are optional convenience copies only.
+shared libraries and header. Release assets are optional convenience copies
+only.
 
-## Manual Archive Refresh
+## Manual Shared Library Refresh
 
 If you need to refresh artifacts locally instead of using the workflow, build
-each supported target explicitly:
+each supported target explicitly on a compatible host:
 
 ```bash
 scripts/build-go-ffi.sh aarch64-apple-darwin
@@ -88,5 +88,5 @@ Commit the updated files:
 After the release-prep PR is merged and CI is green:
 
 1. Create and push the release tag, for example `v0.0.8`.
-2. Optionally create a GitHub release and upload the same archives and checksum
+2. Optionally create a GitHub release and upload the same shared libraries and checksum
    file for convenience.

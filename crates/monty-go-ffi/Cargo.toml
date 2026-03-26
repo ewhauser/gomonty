@@ -14,7 +14,7 @@ repository = { workspace = true }
 
 [lib]
 name = "monty_go_ffi"
-crate-type = ["staticlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 monty = { workspace = true }

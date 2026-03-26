@@ -11,24 +11,24 @@
 
 This package is currently experimental.
 
-It is also `cgo`-backed. Builds succeed only when the module includes a bundled native archive for the target platform under `internal/ffi/lib/...`.
+It uses `purego` to load a bundled native shared library for the target platform from `internal/ffi/lib/...`.
 
 The code is wired for these targets:
 
 - `darwin/arm64`
-- `linux/amd64` with GNU/glibc archives by default
-- `linux/arm64` with GNU/glibc archives by default
-- `linux/amd64` with musl archives when built with `-tags musl`
-- `linux/arm64` with musl archives when built with `-tags musl`
+- `linux/amd64` with GNU/glibc shared libraries by default
+- `linux/arm64` with GNU/glibc shared libraries by default
+- `linux/amd64` with musl shared libraries when built with `-tags musl`
+- `linux/arm64` with musl shared libraries when built with `-tags musl`
 - `windows/amd64`
 
-If the archive for your target is missing, `go build` or `go test` will fail at link time.
+If the shared library for your target is missing from the source tree, builds for that target will fail. If extraction or loading fails at runtime, the package returns a synthetic "native bindings unavailable" error.
 
 ## Requirements
 
 - Go 1.24+
-- `CGO_ENABLED=1`
-- a repo/tag that includes the native archive for your target
+- `CGO_ENABLED=0`
+- a repo/tag that includes the native shared library for your target
 - `-tags musl` when building on Alpine or another musl-based Linux environment
 
 ## Install

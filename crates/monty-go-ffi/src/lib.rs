@@ -1155,11 +1155,11 @@ fn resume_futures_internal(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn monty_go_bytes_free(bytes: MontyGoBytes) {
-    if !bytes.ptr.is_null() && bytes.len > 0 {
+pub extern "C" fn monty_go_bytes_free(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() && len > 0 {
         // SAFETY: ptr/len were allocated by `MontyGoBytes::from_vec`
         unsafe {
-            let _ = Vec::from_raw_parts(bytes.ptr, bytes.len, bytes.len);
+            let _ = Vec::from_raw_parts(ptr, len, len);
         }
     }
 }
@@ -1197,15 +1197,20 @@ pub extern "C" fn monty_go_error_free(error: *mut MontyGoError) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn monty_go_error_json(error: *const MontyGoError) -> MontyGoBytes {
-    if error.is_null() {
-        return MontyGoBytes::empty();
+pub extern "C" fn monty_go_error_json(error: *const MontyGoError, out: *mut MontyGoBytes) {
+    let bytes = if error.is_null() {
+        MontyGoBytes::empty()
+    } else {
+        // SAFETY: caller passes a valid handle pointer
+        let error = unsafe { &*error };
+        serde_json::to_vec(&error.inner.summary())
+            .map(MontyGoBytes::from_vec)
+            .unwrap_or_else(|_| MontyGoBytes::empty())
+    };
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = bytes };
     }
-    // SAFETY: caller passes a valid handle pointer
-    let error = unsafe { &*error };
-    serde_json::to_vec(&error.inner.summary())
-        .map(MontyGoBytes::from_vec)
-        .unwrap_or_else(|_| MontyGoBytes::empty())
 }
 
 #[unsafe(no_mangle)]
@@ -1213,20 +1218,26 @@ pub extern "C" fn monty_go_error_display(
     error: *const MontyGoError,
     format: *const c_char,
     color: bool,
-) -> MontyGoBytes {
-    if error.is_null() {
-        return MontyGoBytes::empty();
+    out: *mut MontyGoBytes,
+) {
+    let bytes = if error.is_null() {
+        MontyGoBytes::empty()
+    } else {
+        // SAFETY: caller passes a valid handle pointer
+        let error = unsafe { &*error };
+        let format = unsafe { string_from_cstr(format) }.unwrap_or("traceback");
+        MontyGoBytes::from_vec(
+            error
+                .inner
+                .display(format, color)
+                .unwrap_or_else(|display_error| display_error)
+                .into_bytes(),
+        )
+    };
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = bytes };
     }
-    // SAFETY: caller passes a valid handle pointer
-    let error = unsafe { &*error };
-    let format = unsafe { string_from_cstr(format) }.unwrap_or("traceback");
-    MontyGoBytes::from_vec(
-        error
-            .inner
-            .display(format, color)
-            .unwrap_or_else(|display_error| display_error)
-            .into_bytes(),
-    )
 }
 
 #[unsafe(no_mangle)]
@@ -1235,8 +1246,9 @@ pub extern "C" fn monty_go_runner_new(
     code_len: usize,
     options_ptr: *const u8,
     options_len: usize,
-) -> MontyGoRunnerResult {
-    catch_runner_result(|| {
+    out: *mut MontyGoRunnerResult,
+) {
+    let result = catch_runner_result(|| {
         let code = unsafe { slice_from_raw(code_ptr, code_len) };
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
 
@@ -1277,15 +1289,20 @@ pub extern "C" fn monty_go_runner_new(
             }),
             Err(error) => MontyGoRunnerResult::err(FfiError::Exception(error)),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_runner_load(
     data_ptr: *const u8,
     data_len: usize,
-) -> MontyGoRunnerResult {
-    catch_runner_result(|| {
+    out: *mut MontyGoRunnerResult,
+) {
+    let result = catch_runner_result(|| {
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
         #[derive(serde::Deserialize)]
         struct StoredRunner {
@@ -1302,19 +1319,24 @@ pub extern "C" fn monty_go_runner_load(
             }),
             Err(error) => MontyGoRunnerResult::err(FfiError::Api(error.to_string())),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_runner_dump(
     runner: *const MontyGoRunner,
+    out: *mut MontyGoBytes,
     error_out: *mut *mut MontyGoError,
-) -> MontyGoBytes {
+) {
     if !error_out.is_null() {
         // SAFETY: caller owns the out pointer
         unsafe { *error_out = ptr::null_mut() };
     }
-    catch_bytes_result(error_out, || {
+    let bytes = catch_bytes_result(error_out, || {
         if runner.is_null() {
             if !error_out.is_null() {
                 unsafe {
@@ -1352,7 +1374,11 @@ pub extern "C" fn monty_go_runner_dump(
                 MontyGoBytes::empty()
             }
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = bytes };
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1404,8 +1430,9 @@ pub extern "C" fn monty_go_runner_start(
     runner: *const MontyGoRunner,
     options_ptr: *const u8,
     options_len: usize,
-) -> MontyGoOpResult {
-    catch_op_result(|| {
+    out: *mut MontyGoOpResult,
+) {
+    let result = catch_op_result(|| {
         if runner.is_null() {
             return MontyGoOpResult::err(
                 FfiError::Api("runner handle is null".to_owned()),
@@ -1424,15 +1451,20 @@ pub extern "C" fn monty_go_runner_start(
             Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
             Err((error, prints)) => MontyGoOpResult::err(error, None, prints),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_repl_new(
     options_ptr: *const u8,
     options_len: usize,
-) -> MontyGoReplResult {
-    catch_repl_result(|| {
+    out: *mut MontyGoReplResult,
+) {
+    let result = catch_repl_result(|| {
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
         let options: WireReplOptions = match decode_wire(options) {
             Ok(options) => options,
@@ -1452,12 +1484,20 @@ pub extern "C" fn monty_go_repl_new(
             script_name,
             inner: Some(inner),
         })
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn monty_go_repl_load(data_ptr: *const u8, data_len: usize) -> MontyGoReplResult {
-    catch_repl_result(|| {
+pub extern "C" fn monty_go_repl_load(
+    data_ptr: *const u8,
+    data_len: usize,
+    out: *mut MontyGoReplResult,
+) {
+    let result = catch_repl_result(|| {
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
         #[derive(serde::Deserialize)]
         struct StoredLoadedRepl {
@@ -1472,18 +1512,23 @@ pub extern "C" fn monty_go_repl_load(data_ptr: *const u8, data_len: usize) -> Mo
             }),
             Err(error) => MontyGoReplResult::err(FfiError::Api(error.to_string())),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_repl_dump(
     repl: *const MontyGoRepl,
+    out: *mut MontyGoBytes,
     error_out: *mut *mut MontyGoError,
-) -> MontyGoBytes {
+) {
     if !error_out.is_null() {
         unsafe { *error_out = ptr::null_mut() };
     }
-    catch_bytes_result(error_out, || {
+    let bytes = catch_bytes_result(error_out, || {
         if repl.is_null() {
             if !error_out.is_null() {
                 unsafe {
@@ -1526,7 +1571,11 @@ pub extern "C" fn monty_go_repl_dump(
                 MontyGoBytes::empty()
             }
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = bytes };
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1536,8 +1585,9 @@ pub extern "C" fn monty_go_repl_feed_start(
     code_len: usize,
     options_ptr: *const u8,
     options_len: usize,
-) -> MontyGoOpResult {
-    catch_op_result(|| {
+    out: *mut MontyGoOpResult,
+) {
+    let result = catch_op_result(|| {
         if repl.is_null() {
             return MontyGoOpResult::err(
                 FfiError::Api("repl handle is null".to_owned()),
@@ -1556,18 +1606,23 @@ pub extern "C" fn monty_go_repl_feed_start(
             Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
             Err((error, repl, prints)) => MontyGoOpResult::err(error, Some(repl), prints),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_progress_describe(
     progress: *const MontyGoProgress,
+    out: *mut MontyGoBytes,
     error_out: *mut *mut MontyGoError,
-) -> MontyGoBytes {
+) {
     if !error_out.is_null() {
         unsafe { *error_out = ptr::null_mut() };
     }
-    catch_bytes_result(error_out, || {
+    let bytes = catch_bytes_result(error_out, || {
         if progress.is_null() {
             if !error_out.is_null() {
                 unsafe {
@@ -1598,18 +1653,23 @@ pub extern "C" fn monty_go_progress_describe(
                 MontyGoBytes::empty()
             }
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = bytes };
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_progress_dump(
     progress: *const MontyGoProgress,
+    out: *mut MontyGoBytes,
     error_out: *mut *mut MontyGoError,
-) -> MontyGoBytes {
+) {
     if !error_out.is_null() {
         unsafe { *error_out = ptr::null_mut() };
     }
-    catch_bytes_result(error_out, || {
+    let bytes = catch_bytes_result(error_out, || {
         if progress.is_null() {
             if !error_out.is_null() {
                 unsafe {
@@ -1640,12 +1700,20 @@ pub extern "C" fn monty_go_progress_dump(
                 MontyGoBytes::empty()
             }
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = bytes };
+    }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn monty_go_progress_load(data_ptr: *const u8, data_len: usize) -> MontyGoOpResult {
-    catch_op_result(|| {
+pub extern "C" fn monty_go_progress_load(
+    data_ptr: *const u8,
+    data_len: usize,
+    out: *mut MontyGoOpResult,
+) {
+    let result = catch_op_result(|| {
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
         match postcard::from_bytes::<StoredProgress>(data) {
             Ok(progress) => MontyGoOpResult::ok(progress, String::new()),
@@ -1653,12 +1721,19 @@ pub extern "C" fn monty_go_progress_load(data_ptr: *const u8, data_len: usize) -
                 MontyGoOpResult::err(FfiError::Api(error.to_string()), None, String::new())
             }
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn monty_go_progress_take_repl(progress: *mut MontyGoProgress) -> MontyGoReplResult {
-    catch_repl_result(|| {
+pub extern "C" fn monty_go_progress_take_repl(
+    progress: *mut MontyGoProgress,
+    out: *mut MontyGoReplResult,
+) {
+    let result = catch_repl_result(|| {
         if progress.is_null() {
             return MontyGoReplResult::err(FfiError::Api("progress handle is null".to_owned()));
         }
@@ -1681,7 +1756,11 @@ pub extern "C" fn monty_go_progress_take_repl(progress: *mut MontyGoProgress) ->
             Ok(repl) => MontyGoReplResult::ok(repl),
             Err(error) => MontyGoReplResult::err(error),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1689,8 +1768,9 @@ pub extern "C" fn monty_go_progress_resume_call(
     progress: *mut MontyGoProgress,
     result_ptr: *const u8,
     result_len: usize,
-) -> MontyGoOpResult {
-    catch_op_result(|| {
+    out: *mut MontyGoOpResult,
+) {
+    let result = catch_op_result(|| {
         if progress.is_null() {
             return MontyGoOpResult::err(
                 FfiError::Api("progress handle is null".to_owned()),
@@ -1743,7 +1823,11 @@ pub extern "C" fn monty_go_progress_resume_call(
             Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
             Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1751,8 +1835,9 @@ pub extern "C" fn monty_go_progress_resume_lookup(
     progress: *mut MontyGoProgress,
     result_ptr: *const u8,
     result_len: usize,
-) -> MontyGoOpResult {
-    catch_op_result(|| {
+    out: *mut MontyGoOpResult,
+) {
+    let result = catch_op_result(|| {
         if progress.is_null() {
             return MontyGoOpResult::err(
                 FfiError::Api("progress handle is null".to_owned()),
@@ -1805,7 +1890,11 @@ pub extern "C" fn monty_go_progress_resume_lookup(
             Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
             Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1813,8 +1902,9 @@ pub extern "C" fn monty_go_progress_resume_futures(
     progress: *mut MontyGoProgress,
     results_ptr: *const u8,
     results_len: usize,
-) -> MontyGoOpResult {
-    catch_op_result(|| {
+    out: *mut MontyGoOpResult,
+) {
+    let result = catch_op_result(|| {
         if progress.is_null() {
             return MontyGoOpResult::err(
                 FfiError::Api("progress handle is null".to_owned()),
@@ -1867,5 +1957,9 @@ pub extern "C" fn monty_go_progress_resume_futures(
             Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
             Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
         }
-    })
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
 }

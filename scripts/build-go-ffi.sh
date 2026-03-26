@@ -51,33 +51,59 @@ target="$1"
 case "$target" in
   aarch64-apple-darwin)
     lib_dir="$LIB_ROOT/darwin_arm64"
-    lib_name="libmonty_go_ffi.a"
+    lib_name="libmonty_go_ffi.dylib"
     ;;
   aarch64-unknown-linux-gnu)
     lib_dir="$LIB_ROOT/linux_arm64"
-    lib_name="libmonty_go_ffi.a"
+    lib_name="libmonty_go_ffi.so"
     ;;
   aarch64-unknown-linux-musl)
     lib_dir="$LIB_ROOT/linux_arm64_musl"
-    lib_name="libmonty_go_ffi.a"
+    lib_name="libmonty_go_ffi.so"
     ;;
   x86_64-unknown-linux-gnu)
     lib_dir="$LIB_ROOT/linux_amd64"
-    lib_name="libmonty_go_ffi.a"
+    lib_name="libmonty_go_ffi.so"
     ;;
   x86_64-unknown-linux-musl)
     lib_dir="$LIB_ROOT/linux_amd64_musl"
-    lib_name="libmonty_go_ffi.a"
+    lib_name="libmonty_go_ffi.so"
     ;;
   x86_64-pc-windows-msvc)
     lib_dir="$LIB_ROOT/windows_amd64"
-    lib_name="monty_go_ffi.lib"
+    lib_name="monty_go_ffi.dll"
     ;;
   *)
     echo "unsupported target: $target" >&2
     exit 1
     ;;
 esac
+
+host_os="$(uname -s)"
+
+if [[ "$target" == *-unknown-linux-musl ]]; then
+  export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=-crt-static"
+
+  if [[ "$host_os" != "Linux" ]]; then
+    echo "building shared libraries for $target requires a compatible Linux host; use the release-prep workflow or a Linux builder" >&2
+    exit 1
+  fi
+
+  # On a musl-native host (for example Alpine), the default compiler already
+  # targets musl and can link the shared library directly.
+  if [[ "${MONTY_GO_FFI_MUSL_NATIVE:-0}" != "1" ]]; then
+    if ! command -v musl-gcc >/dev/null 2>&1; then
+      echo "musl-gcc is required to build shared libraries for $target on glibc Linux hosts; set MONTY_GO_FFI_MUSL_NATIVE=1 on musl-native builders" >&2
+      exit 1
+    fi
+
+    linker_var="CARGO_TARGET_${target^^}_LINKER"
+    linker_var="${linker_var//-/_}"
+    if [[ -z "${!linker_var:-}" ]]; then
+      export "$linker_var=musl-gcc"
+    fi
+  fi
+fi
 
 mkdir -p "$lib_dir"
 
