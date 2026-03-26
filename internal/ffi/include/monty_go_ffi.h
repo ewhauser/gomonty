@@ -163,7 +163,7 @@ typedef struct MontyGoReplResult {
 extern "C" {
 #endif // __cplusplus
 
-void monty_go_bytes_free(struct MontyGoBytes bytes);
+void monty_go_bytes_free(uint8_t *ptr, uintptr_t len);
 
 void monty_go_runner_free(struct MontyGoRunner *runner);
 
@@ -173,64 +173,81 @@ void monty_go_progress_free(struct MontyGoProgress *progress);
 
 void monty_go_error_free(struct MontyGoError *error);
 
-struct MontyGoBytes monty_go_error_json(const struct MontyGoError *error);
+void monty_go_error_json(const struct MontyGoError *error, struct MontyGoBytes *out);
 
-struct MontyGoBytes monty_go_error_display(const struct MontyGoError *error,
-                                           const char *format,
-                                           bool color);
+void monty_go_error_display(const struct MontyGoError *error,
+                            const char *format,
+                            bool color,
+                            struct MontyGoBytes *out);
 
-struct MontyGoRunnerResult monty_go_runner_new(const uint8_t *code_ptr,
-                                               uintptr_t code_len,
-                                               const uint8_t *options_ptr,
-                                               uintptr_t options_len);
+void monty_go_runner_new(const uint8_t *code_ptr,
+                         uintptr_t code_len,
+                         const uint8_t *options_ptr,
+                         uintptr_t options_len,
+                         struct MontyGoRunnerResult *out);
 
-struct MontyGoRunnerResult monty_go_runner_load(const uint8_t *data_ptr, uintptr_t data_len);
+void monty_go_runner_load(const uint8_t *data_ptr,
+                          uintptr_t data_len,
+                          struct MontyGoRunnerResult *out);
 
-struct MontyGoBytes monty_go_runner_dump(const struct MontyGoRunner *runner,
-                                         struct MontyGoError **error_out);
+void monty_go_runner_dump(const struct MontyGoRunner *runner,
+                          struct MontyGoBytes *out,
+                          struct MontyGoError **error_out);
 
 struct MontyGoError *monty_go_runner_type_check(const struct MontyGoRunner *runner,
                                                 const uint8_t *prefix_ptr,
                                                 uintptr_t prefix_len);
 
-struct MontyGoOpResult monty_go_runner_start(const struct MontyGoRunner *runner,
-                                             const uint8_t *options_ptr,
-                                             uintptr_t options_len);
+void monty_go_runner_start(const struct MontyGoRunner *runner,
+                           const uint8_t *options_ptr,
+                           uintptr_t options_len,
+                           struct MontyGoOpResult *out);
 
-struct MontyGoReplResult monty_go_repl_new(const uint8_t *options_ptr, uintptr_t options_len);
+void monty_go_repl_new(const uint8_t *options_ptr,
+                       uintptr_t options_len,
+                       struct MontyGoReplResult *out);
 
-struct MontyGoReplResult monty_go_repl_load(const uint8_t *data_ptr, uintptr_t data_len);
+void monty_go_repl_load(const uint8_t *data_ptr, uintptr_t data_len, struct MontyGoReplResult *out);
 
-struct MontyGoBytes monty_go_repl_dump(const struct MontyGoRepl *repl,
-                                       struct MontyGoError **error_out);
+void monty_go_repl_dump(const struct MontyGoRepl *repl,
+                        struct MontyGoBytes *out,
+                        struct MontyGoError **error_out);
 
-struct MontyGoOpResult monty_go_repl_feed_start(struct MontyGoRepl *repl,
-                                                const uint8_t *code_ptr,
-                                                uintptr_t code_len,
-                                                const uint8_t *options_ptr,
-                                                uintptr_t options_len);
+void monty_go_repl_feed_start(struct MontyGoRepl *repl,
+                              const uint8_t *code_ptr,
+                              uintptr_t code_len,
+                              const uint8_t *options_ptr,
+                              uintptr_t options_len,
+                              struct MontyGoOpResult *out);
 
-struct MontyGoBytes monty_go_progress_describe(const struct MontyGoProgress *progress,
-                                               struct MontyGoError **error_out);
+void monty_go_progress_describe(const struct MontyGoProgress *progress,
+                                struct MontyGoBytes *out,
+                                struct MontyGoError **error_out);
 
-struct MontyGoBytes monty_go_progress_dump(const struct MontyGoProgress *progress,
-                                           struct MontyGoError **error_out);
+void monty_go_progress_dump(const struct MontyGoProgress *progress,
+                            struct MontyGoBytes *out,
+                            struct MontyGoError **error_out);
 
-struct MontyGoOpResult monty_go_progress_load(const uint8_t *data_ptr, uintptr_t data_len);
+void monty_go_progress_load(const uint8_t *data_ptr,
+                            uintptr_t data_len,
+                            struct MontyGoOpResult *out);
 
-struct MontyGoReplResult monty_go_progress_take_repl(struct MontyGoProgress *progress);
+void monty_go_progress_take_repl(struct MontyGoProgress *progress, struct MontyGoReplResult *out);
 
-struct MontyGoOpResult monty_go_progress_resume_call(struct MontyGoProgress *progress,
-                                                     const uint8_t *result_ptr,
-                                                     uintptr_t result_len);
+void monty_go_progress_resume_call(struct MontyGoProgress *progress,
+                                   const uint8_t *result_ptr,
+                                   uintptr_t result_len,
+                                   struct MontyGoOpResult *out);
 
-struct MontyGoOpResult monty_go_progress_resume_lookup(struct MontyGoProgress *progress,
-                                                       const uint8_t *result_ptr,
-                                                       uintptr_t result_len);
+void monty_go_progress_resume_lookup(struct MontyGoProgress *progress,
+                                     const uint8_t *result_ptr,
+                                     uintptr_t result_len,
+                                     struct MontyGoOpResult *out);
 
-struct MontyGoOpResult monty_go_progress_resume_futures(struct MontyGoProgress *progress,
-                                                        const uint8_t *results_ptr,
-                                                        uintptr_t results_len);
+void monty_go_progress_resume_futures(struct MontyGoProgress *progress,
+                                      const uint8_t *results_ptr,
+                                      uintptr_t results_len,
+                                      struct MontyGoOpResult *out);
 
 #ifdef __cplusplus
 }  // extern "C"

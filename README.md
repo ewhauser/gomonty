@@ -8,11 +8,11 @@
 - Go module path: `github.com/ewhauser/gomonty`
 - Rust FFI crate: `crates/monty-go-ffi`
 - Upstream Monty source: pinned in the root [`Cargo.toml`](./Cargo.toml)
-- Native archives: checked into `internal/ffi/lib/<target>`
+- Native shared libraries: checked into `internal/ffi/lib/<target>`
 - Generated header: checked into `internal/ffi/include/monty_go_ffi.h`
-- Alpine/musl builds use a separate `musl` Go build tag and musl-specific archives
+- Alpine/musl builds use a separate `musl` Go build tag and musl-specific shared libraries
 
-Tagged source trees must already contain the native archives required by the current cgo linking model. GitHub release assets are optional convenience copies, not the source of truth for Go module consumers.
+Tagged source trees must already contain the native shared libraries required by the runtime loader. GitHub release assets are optional convenience copies, not the source of truth for Go module consumers.
 
 ## Repository Layout
 
@@ -20,21 +20,23 @@ Tagged source trees must already contain the native archives required by the cur
 - [`go/README.md`](./go/README.md): consumer-facing Go API notes and examples carried over from the source repo
 - `examples/`: standalone example module for local consumption examples
 - `crates/monty-go-ffi/`: copied Rust C ABI crate
-- `scripts/build-go-ffi.sh <target-triple>`: builds one target archive into `internal/ffi/lib/...`
+- `scripts/build-go-ffi.sh <target-triple>`: builds one target shared library into `internal/ffi/lib/...`
 
 ## Build Notes
 
-The Go package remains cgo-backed. Normal cgo builds link against a prebuilt static archive for the current target from `internal/ffi/lib/<target>`.
+The Go package now uses `purego` and loads a bundled shared library for the current target from `internal/ffi/lib/<target>`.
 
-Default Linux builds target the GNU/glibc archives. Alpine and other musl-based Linux builds must opt into the musl archive family with the `musl` Go build tag.
+On first use, the loader extracts the embedded shared library to `os.UserCacheDir()` with an `os.TempDir()` fallback, then opens it with the platform loader.
 
-The `verify` workflow runs cgo-enabled Go tests on native Linux and macOS runners. Windows is currently build-only verification in CI, while still producing the tracked `windows/amd64` archive. Musl archives are currently build-verified rather than executed in CI.
+Default Linux builds target the GNU/glibc shared libraries. Alpine and other musl-based Linux builds must opt into the musl family with the `musl` Go build tag.
 
-To build or refresh the host archive:
+The `verify` workflow runs `CGO_ENABLED=0` Go tests on native Linux, macOS, and Windows runners. Musl shared libraries are build-verified rather than executed in CI.
+
+To build or refresh the host shared library:
 
 ```bash
 scripts/build-go-ffi.sh aarch64-apple-darwin
-go test ./...
+CGO_ENABLED=0 go test ./...
 ```
 
 Requirements:
@@ -56,7 +58,7 @@ go test -tags musl ./...
 ## Consumer Example
 
 For normal consumers, the intended path is to depend on a tagged version of this
-repo whose source tree already contains the native archive for the consumer's
+repo whose source tree already contains the native shared library for the consumer's
 target platform.
 
 Add the module:
@@ -105,11 +107,11 @@ The same example lives in [`examples/cmd/example`](./examples/cmd/example). To r
 
 ```bash
 cd examples
-go run ./cmd/example
+CGO_ENABLED=0 go run ./cmd/example
 ```
 
 If you are consuming a branch, local checkout, or unreleased commit instead of a
-prepared tag, you may need to build or refresh the archive for your platform
+prepared tag, you may need to build or refresh the shared library for your platform
 first:
 
 ```bash
@@ -129,10 +131,10 @@ The Go benchmark suite mirrors the current upstream Monty benchmark cases so
 the two projects exercise the same scripts and expected outputs. The shared
 kitchen-sink workload is copied into [`testdata/bench_kitchen_sink.py`](./testdata/bench_kitchen_sink.py).
 
-After building the host archive, run the local Go-only benchmarks with:
+After building the host shared library, run the local Go-only benchmarks with:
 
 ```bash
-go test -run '^$' -bench BenchmarkMonty -benchmem
+CGO_ENABLED=0 go test -run '^$' -bench BenchmarkMonty -benchmem
 ```
 
 This covers the parse-once/repeated-run benchmark cases plus
@@ -141,8 +143,8 @@ This covers the parse-once/repeated-run benchmark cases plus
 There are also Go-specific benchmark suites for wrapper overhead:
 
 ```bash
-go test -run '^$' -bench BenchmarkMontyCallbacks -benchmem
-go test -run '^$' -bench BenchmarkMontyDecompose -benchmem
+CGO_ENABLED=0 go test -run '^$' -bench BenchmarkMontyCallbacks -benchmem
+CGO_ENABLED=0 go test -run '^$' -bench BenchmarkMontyDecompose -benchmem
 ```
 
 These add:
@@ -210,13 +212,13 @@ The repo also includes Go fuzz targets for:
 Run a short fuzzing pass with:
 
 ```bash
-go test -run '^$' -fuzz FuzzValueJSON -fuzztime=10s .
-go test -run '^$' -fuzz FuzzCompileAndRun -fuzztime=10s .
-go test -run '^$' -fuzz FuzzLoadRunner -fuzztime=10s .
+CGO_ENABLED=0 go test -run '^$' -fuzz FuzzValueJSON -fuzztime=10s .
+CGO_ENABLED=0 go test -run '^$' -fuzz FuzzCompileAndRun -fuzztime=10s .
+CGO_ENABLED=0 go test -run '^$' -fuzz FuzzLoadRunner -fuzztime=10s .
 ```
 
-The native runner fuzzers require a cgo-enabled build for the current host
-archive, while `FuzzValueJSON` is pure Go.
+The native runner fuzzers require a supported host shared library, but they no
+longer require `cgo`. `FuzzValueJSON` remains pure Go.
 
 ## Upstream Overrides
 
@@ -228,4 +230,4 @@ monty = { path = "../monty/crates/monty" }
 monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
-See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the release-prep workflow that refreshes the tracked archives and checksums before tagging.
+See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the release-prep workflow that refreshes the tracked shared libraries and checksums before tagging.

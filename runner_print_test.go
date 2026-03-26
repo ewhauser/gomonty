@@ -1,4 +1,4 @@
-//go:build cgo && !(darwin && amd64)
+//go:build (darwin && arm64) || (linux && amd64) || (linux && arm64) || (windows && amd64)
 
 package monty
 

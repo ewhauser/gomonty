@@ -35,7 +35,7 @@ jobs:
       - name: Install cbindgen
         run: cargo install cbindgen --locked
 
-      - name: Build header and linux/amd64 archive
+      - name: Build header and linux/amd64 shared library
         shell: bash
         run: |
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
@@ -47,11 +47,11 @@ jobs:
           name: ffi-header
           path: internal/ffi/include/monty_go_ffi.h
 
-      - name: Upload linux/amd64 archive
+      - name: Upload linux/amd64 shared library
         uses: actions/upload-artifact@v4
         with:
           name: ffi-linux-amd64
-          path: internal/ffi/lib/linux_amd64/libmonty_go_ffi.a
+          path: internal/ffi/lib/linux_amd64/libmonty_go_ffi.so
 
       - name: Upload Cargo.lock
         uses: actions/upload-artifact@v4
@@ -59,7 +59,7 @@ jobs:
           name: cargo-lock
           path: Cargo.lock
 
-  archives:
+  shared-libraries:
     name: build ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     needs: header-and-linux-amd64
@@ -71,27 +71,27 @@ jobs:
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
             artifact_name: ffi-linux-arm64
-            artifact_path: internal/ffi/lib/linux_arm64/libmonty_go_ffi.a
+            artifact_path: internal/ffi/lib/linux_arm64/libmonty_go_ffi.so
           - name: linux-amd64-musl
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-musl
             artifact_name: ffi-linux-amd64-musl
-            artifact_path: internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.a
+            artifact_path: internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so
           - name: linux-arm64-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-musl
             artifact_name: ffi-linux-arm64-musl
-            artifact_path: internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.a
+            artifact_path: internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
             artifact_name: ffi-darwin-arm64
-            artifact_path: internal/ffi/lib/darwin_arm64/libmonty_go_ffi.a
+            artifact_path: internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib
           - name: windows-amd64
             runner: windows-latest
             rust_target: x86_64-pc-windows-msvc
             artifact_name: ffi-windows-amd64
-            artifact_path: internal/ffi/lib/windows_amd64/monty_go_ffi.lib
+            artifact_path: internal/ffi/lib/windows_amd64/monty_go_ffi.dll
 
     steps:
       - uses: actions/checkout@v4
@@ -110,13 +110,17 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Build archive
+      - name: Install musl toolchain
+        if: contains(matrix.rust_target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build shared library
         shell: bash
         run: |
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
           MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
 
-      - name: Upload archive
+      - name: Upload shared library
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
@@ -126,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - header-and-linux-amd64
-      - archives
+      - shared-libraries
     steps:
       - uses: actions/checkout@v4
         with:
@@ -144,7 +148,7 @@ jobs:
           name: cargo-lock
           path: .artifacts/cargo-lock
 
-      - name: Download archive artifacts
+      - name: Download shared library artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: ffi-*
@@ -164,22 +168,22 @@ jobs:
 
           cp .artifacts/ffi-header/monty_go_ffi.h internal/ffi/include/monty_go_ffi.h
           cp .artifacts/cargo-lock/Cargo.lock Cargo.lock
-          cp .artifacts/ffi-linux-amd64/libmonty_go_ffi.a internal/ffi/lib/linux_amd64/libmonty_go_ffi.a
-          cp .artifacts/ffi-linux-arm64/libmonty_go_ffi.a internal/ffi/lib/linux_arm64/libmonty_go_ffi.a
-          cp .artifacts/ffi-linux-amd64-musl/libmonty_go_ffi.a internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.a
-          cp .artifacts/ffi-linux-arm64-musl/libmonty_go_ffi.a internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.a
-          cp .artifacts/ffi-darwin-arm64/libmonty_go_ffi.a internal/ffi/lib/darwin_arm64/libmonty_go_ffi.a
-          cp .artifacts/ffi-windows-amd64/monty_go_ffi.lib internal/ffi/lib/windows_amd64/monty_go_ffi.lib
+          cp .artifacts/ffi-linux-amd64/libmonty_go_ffi.so internal/ffi/lib/linux_amd64/libmonty_go_ffi.so
+          cp .artifacts/ffi-linux-arm64/libmonty_go_ffi.so internal/ffi/lib/linux_arm64/libmonty_go_ffi.so
+          cp .artifacts/ffi-linux-amd64-musl/libmonty_go_ffi.so internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so
+          cp .artifacts/ffi-linux-arm64-musl/libmonty_go_ffi.so internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
+          cp .artifacts/ffi-darwin-arm64/libmonty_go_ffi.dylib internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib
+          cp .artifacts/ffi-windows-amd64/monty_go_ffi.dll internal/ffi/lib/windows_amd64/monty_go_ffi.dll
 
           sha256sum \
             Cargo.lock \
             internal/ffi/include/monty_go_ffi.h \
-            internal/ffi/lib/darwin_arm64/libmonty_go_ffi.a \
-            internal/ffi/lib/linux_amd64/libmonty_go_ffi.a \
-            internal/ffi/lib/linux_arm64/libmonty_go_ffi.a \
-            internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.a \
-            internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.a \
-            internal/ffi/lib/windows_amd64/monty_go_ffi.lib \
+            internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
+            internal/ffi/lib/linux_amd64/libmonty_go_ffi.so \
+            internal/ffi/lib/linux_arm64/libmonty_go_ffi.so \
+            internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so \
+            internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
+            internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
             > internal/ffi/checksums.txt
 
       - name: Prepare branch metadata

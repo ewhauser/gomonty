@@ -43,12 +43,12 @@ jobs:
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-musl
             run_go_tests: false
-            build_only_note: "Musl/Alpine archives are build-verified in CI; native cgo go test is not run on this workflow."
+            build_only_note: "Musl/Alpine shared libraries are build-verified in CI; native Go tests are not run on this workflow."
           - name: linux-musl-arm64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-musl
             run_go_tests: false
-            build_only_note: "Musl/Alpine archives are build-verified in CI; native cgo go test is not run on this workflow."
+            build_only_note: "Musl/Alpine shared libraries are build-verified in CI; native Go tests are not run on this workflow."
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
@@ -57,8 +57,8 @@ jobs:
           - name: windows-amd64
             runner: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            run_go_tests: false
-            build_only_note: "Windows uses build-only verification in CI; native cgo go test is not run on this workflow."
+            run_go_tests: true
+            build_only_note: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -83,15 +83,19 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Build native archive
+      - name: Install musl toolchain
+        if: contains(matrix.rust_target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build native shared library
         shell: bash
         run: |
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
           MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
 
-      - name: Run cgo-enabled Go tests
+      - name: Run Go tests
         if: matrix.run_go_tests
-        run: go test ./...
+        run: CGO_ENABLED=0 go test ./...
 
       - name: Build-only verification note
         if: ${{ !matrix.run_go_tests }}
