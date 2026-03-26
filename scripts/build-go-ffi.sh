@@ -89,15 +89,19 @@ if [[ "$target" == *-unknown-linux-musl ]]; then
     exit 1
   fi
 
-  if ! command -v musl-gcc >/dev/null 2>&1; then
-    echo "musl-gcc is required to build shared libraries for $target on Linux" >&2
-    exit 1
-  fi
+  # On a musl-native host (for example Alpine), the default compiler already
+  # targets musl and can link the shared library directly.
+  if [[ "${MONTY_GO_FFI_MUSL_NATIVE:-0}" != "1" ]]; then
+    if ! command -v musl-gcc >/dev/null 2>&1; then
+      echo "musl-gcc is required to build shared libraries for $target on glibc Linux hosts; set MONTY_GO_FFI_MUSL_NATIVE=1 on musl-native builders" >&2
+      exit 1
+    fi
 
-  linker_var="CARGO_TARGET_${target^^}_LINKER"
-  linker_var="${linker_var//-/_}"
-  if [[ -z "${!linker_var:-}" ]]; then
-    export "$linker_var=musl-gcc"
+    linker_var="CARGO_TARGET_${target^^}_LINKER"
+    linker_var="${linker_var//-/_}"
+    if [[ -z "${!linker_var:-}" ]]; then
+      export "$linker_var=musl-gcc"
+    fi
   fi
 fi
 

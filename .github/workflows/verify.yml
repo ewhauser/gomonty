@@ -40,7 +40,9 @@ jobs:
           MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
 
       - name: Run CGO-disabled tests
-        run: CGO_ENABLED=0 go test ./...
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
 
   platform-verify:
     name: verify ${{ matrix.name }}
@@ -59,16 +61,6 @@ jobs:
             rust_target: aarch64-unknown-linux-gnu
             run_go_tests: true
             build_only_note: ""
-          - name: linux-musl-amd64
-            runner: ubuntu-latest
-            rust_target: x86_64-unknown-linux-musl
-            run_go_tests: false
-            build_only_note: "Musl/Alpine shared libraries are build-verified in CI; native Go tests are not run on this workflow."
-          - name: linux-musl-arm64
-            runner: ubuntu-24.04-arm
-            rust_target: aarch64-unknown-linux-musl
-            run_go_tests: false
-            build_only_note: "Musl/Alpine shared libraries are build-verified in CI; native Go tests are not run on this workflow."
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
@@ -103,10 +95,6 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Install musl toolchain
-        if: contains(matrix.rust_target, 'musl')
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
       - name: Build native shared library
         shell: bash
         run: |
@@ -115,8 +103,60 @@ jobs:
 
       - name: Run Go tests
         if: matrix.run_go_tests
-        run: CGO_ENABLED=0 go test ./...
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
 
       - name: Build-only verification note
         if: ${{ !matrix.run_go_tests }}
         run: echo "${{ matrix.build_only_note }}"
+
+  verify-musl-amd64:
+    name: verify linux-musl-amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build native shared library in musl container
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            rust:1.94-alpine3.21 \
+            sh -lc '
+              set -eux
+              apk add --no-cache bash build-base python3
+              rustup target add x86_64-unknown-linux-musl
+              export PYO3_PYTHON="$(command -v python3)"
+              export MONTY_GO_FFI_MUSL_NATIVE=1
+              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh x86_64-unknown-linux-musl
+            '
+
+      - name: Build-only verification note
+        run: echo "Musl/Alpine shared libraries are build-verified in a musl-native container; native Go tests are not run on this workflow."
+
+  verify-musl-arm64:
+    name: verify linux-musl-arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build native shared library in musl container
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            rust:1.94-alpine3.21 \
+            sh -lc '
+              set -eux
+              apk add --no-cache bash build-base python3
+              rustup target add aarch64-unknown-linux-musl
+              export PYO3_PYTHON="$(command -v python3)"
+              export MONTY_GO_FFI_MUSL_NATIVE=1
+              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh aarch64-unknown-linux-musl
+            '
+
+      - name: Build-only verification note
+        run: echo "Musl/Alpine shared libraries are build-verified in a musl-native container; native Go tests are not run on this workflow."
