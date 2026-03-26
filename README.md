@@ -6,6 +6,7 @@
 
 - Experimental.
 - Go module path: `github.com/ewhauser/gomonty`
+- Go bindings are cgo-free and use `purego` with bundled shared libraries
 - Rust FFI crate: `crates/monty-go-ffi`
 - Upstream Monty source: pinned in the root [`Cargo.toml`](./Cargo.toml)
 - Native shared libraries: checked into `internal/ffi/lib/<target>`
@@ -24,7 +25,7 @@ Tagged source trees must already contain the native shared libraries required by
 
 ## Build Notes
 
-The Go package now uses `purego` and loads a bundled shared library for the current target from `internal/ffi/lib/<target>`.
+The Go package is cgo-free. It uses `purego` to load a bundled shared library for the current target from `internal/ffi/lib/<target>`.
 
 On first use, the loader extracts the embedded shared library to `os.UserCacheDir()` with an `os.TempDir()` fallback, then opens it with the platform loader.
 
@@ -32,7 +33,7 @@ Default Linux builds target the GNU/glibc shared libraries. Alpine and other mus
 
 The `verify` workflow runs `CGO_ENABLED=0` Go tests on native Linux, macOS, and Windows runners. Musl shared libraries are build-verified rather than executed in CI.
 
-To build or refresh the host shared library:
+To build or refresh the shared library for the current host:
 
 ```bash
 scripts/build-go-ffi.sh aarch64-apple-darwin
@@ -131,7 +132,7 @@ The Go benchmark suite mirrors the current upstream Monty benchmark cases so
 the two projects exercise the same scripts and expected outputs. The shared
 kitchen-sink workload is copied into [`testdata/bench_kitchen_sink.py`](./testdata/bench_kitchen_sink.py).
 
-After building the host shared library, run the local Go-only benchmarks with:
+With a host shared library built, run the local Go-only benchmarks with:
 
 ```bash
 CGO_ENABLED=0 go test -run '^$' -bench BenchmarkMonty -benchmem
@@ -217,8 +218,8 @@ CGO_ENABLED=0 go test -run '^$' -fuzz FuzzCompileAndRun -fuzztime=10s .
 CGO_ENABLED=0 go test -run '^$' -fuzz FuzzLoadRunner -fuzztime=10s .
 ```
 
-The native runner fuzzers require a supported host shared library, but they no
-longer require `cgo`. `FuzzValueJSON` remains pure Go.
+The native runner fuzzers require a supported host shared library and run with
+`CGO_ENABLED=0`. `FuzzValueJSON` remains pure Go.
 
 ## Upstream Overrides
 
@@ -230,4 +231,4 @@ monty = { path = "../monty/crates/monty" }
 monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
-See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the release-prep workflow that refreshes the tracked shared libraries and checksums before tagging.
+See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the release-prep workflow that refreshes the tracked shared libraries and checksums for each tag.
