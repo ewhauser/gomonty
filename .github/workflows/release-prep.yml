@@ -126,7 +126,7 @@ jobs:
             -v "$PWD:/work" \
             -w /work \
             rust:1.94-alpine3.21 \
-            sh -lc '
+            sh -c '
               set -eux
               apk add --no-cache bash build-base python3
               host="$(rustc -vV | sed -n "s/^host: //p")"
@@ -156,7 +156,7 @@ jobs:
             -v "$PWD:/work" \
             -w /work \
             rust:1.94-alpine3.21 \
-            sh -lc '
+            sh -c '
               set -eux
               apk add --no-cache bash build-base python3
               host="$(rustc -vV | sed -n "s/^host: //p")"
