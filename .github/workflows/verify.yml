@@ -17,7 +17,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.mod
+          cache-dependency-path: |
+            go.sum
+            examples/go.sum
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -43,6 +45,15 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go test ./...
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Smoke test example module
+        shell: bash
+        run: |
+          cd examples
+          CGO_ENABLED=0 go run ./cmd/example
 
   platform-verify:
     name: verify ${{ matrix.name }}
@@ -79,7 +90,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.mod
+          cache-dependency-path: |
+            go.sum
+            examples/go.sum
 
       - name: Setup Python
         uses: actions/setup-python@v5

@@ -26,15 +26,21 @@ If the shared library for your target is missing from the source tree, builds fo
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.25+
 - `CGO_ENABLED=0`
 - a repo/tag that includes the native shared library for your target
 - `-tags musl` when building on Alpine or another musl-based Linux environment
 
 ## Install
 
+```bash
+go get github.com/ewhauser/gomonty@latest
+```
+
+Or in `go.mod`:
+
 ```go
-require github.com/ewhauser/gomonty latest
+require github.com/ewhauser/gomonty vX.Y.Z
 ```
 
 ## Quick Start

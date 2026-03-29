@@ -205,6 +205,8 @@ jobs:
       - name: Stage tracked artifacts
         shell: bash
         run: |
+          find internal/ffi/lib -type f \( -name '*.a' -o -name '*.lib' \) -delete
+
           mkdir -p \
             internal/ffi/include \
             internal/ffi/lib/darwin_arm64 \
@@ -258,7 +260,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH_NAME"
-          git add Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
+          git add -A Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
           git commit -m "Prepare release artifacts"
           git push --set-upstream origin "$BRANCH_NAME"
 
@@ -291,7 +293,7 @@ jobs:
               "Updated artifacts:",
               "- `Cargo.lock`",
               "- `internal/ffi/include/monty_go_ffi.h`",
-              "- `internal/ffi/lib/...`",
+              "- `internal/ffi/lib/...` shared libraries",
               "- `internal/ffi/checksums.txt`",
             ].join("\n");
 

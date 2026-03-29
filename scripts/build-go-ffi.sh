@@ -122,4 +122,5 @@ if [[ ! -f "$artifact" ]]; then
 fi
 
 cp "$artifact" "$lib_dir/$lib_name"
+rm -f "$lib_dir/libmonty_go_ffi.a" "$lib_dir/monty_go_ffi.lib"
 echo "Wrote $lib_dir/$lib_name"
