@@ -233,4 +233,4 @@ monty = { path = "../monty/crates/monty" }
 monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
-See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the single `make release` workflow that refreshes tracked shared libraries, tags the release, and warms the Go module proxy.
+See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the protected-branch release flow: `make release` opens the release-prep PR, then `make publish-release VERSION=vX.Y.Z` tags merged `main`, creates the GitHub release, and warms the Go module proxy.
