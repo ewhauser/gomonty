@@ -1,22 +1,32 @@
-name: release-prep
+name: release
 
 on:
   workflow_dispatch:
     inputs:
-      release_label:
-        description: "Optional label for the release-prep branch and PR"
-        required: false
+      version:
+        description: "Release version with a leading v, for example v0.0.9"
+        required: true
         type: string
 
 permissions:
   contents: write
-  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   header-and-linux-amd64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate release inputs
+        shell: bash
+        run: |
+          test "${GITHUB_REF_NAME}" = "main"
+          version="${{ github.event.inputs.version }}"
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -172,17 +182,28 @@ jobs:
           name: ffi-linux-arm64-musl
           path: internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
 
-  open-pr:
+  publish:
     runs-on: ubuntu-latest
     needs:
       - header-and-linux-amd64
       - shared-libraries
       - musl-shared-library-amd64
       - musl-shared-library-arm64
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: main
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            examples/go.sum
 
       - name: Download header
         uses: actions/download-artifact@v4
@@ -202,9 +223,22 @@ jobs:
           pattern: ffi-*
           path: .artifacts
 
-      - name: Stage tracked artifacts
+      - name: Prepare release tree
         shell: bash
         run: |
+          version="${{ github.event.inputs.version }}"
+          version_no_v="${version#v}"
+
+          git fetch --tags origin
+          previous_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+          if git rev-parse --verify --quiet "refs/tags/$version" >/dev/null; then
+            echo "Tag $version already exists" >&2
+            exit 1
+          fi
+          echo "PREVIOUS_TAG=$previous_tag" >> "$GITHUB_ENV"
+
+          sed -i -E '0,/^version = "[^"]+"/s//version = "'"$version_no_v"'"/' Cargo.toml
+
           find internal/ffi/lib -type f \( -name '*.a' -o -name '*.lib' \) -delete
 
           mkdir -p \
@@ -236,74 +270,65 @@ jobs:
             internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
             > internal/ffi/checksums.txt
 
-      - name: Prepare branch metadata
+      - name: Validate release tree
         shell: bash
         run: |
-          label="${{ github.event.inputs.release_label }}"
-          if [[ -z "$label" ]]; then
-            label="run-${{ github.run_id }}"
-          fi
-          safe_label="$(echo "$label" | tr '[:space:]' '-' | tr -cd '[:alnum:]._/-')"
-          branch="release-prep/$safe_label"
-          echo "BRANCH_NAME=$branch" >> "$GITHUB_ENV"
-          echo "PR_TITLE=Release prep: $label" >> "$GITHUB_ENV"
+          CGO_ENABLED=0 go test ./...
+          go vet ./...
+          (
+            cd examples
+            CGO_ENABLED=0 go run ./cmd/example
+          )
 
-      - name: Commit and push changes
+      - name: Commit, tag, and push
         shell: bash
         run: |
-          if ! git status --short -- Cargo.lock internal/ffi | grep -q .; then
-            echo "No artifact updates detected; skipping PR creation."
-            echo "SKIP_PR=1" >> "$GITHUB_ENV"
-            exit 0
+          version="${{ github.event.inputs.version }}"
+
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.toml Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
+            git commit -m "Release $version"
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$BRANCH_NAME"
-          git add -A Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
-          git commit -m "Prepare release artifacts"
-          git push --set-upstream origin "$BRANCH_NAME"
+          git tag "$version"
+          git push origin HEAD:main
+          git push origin "$version"
 
-      - name: Open release-prep PR
-        if: env.SKIP_PR != '1'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const head = `${owner}:${process.env.BRANCH_NAME}`;
-            const base = context.payload.repository.default_branch;
+      - name: Create GitHub release
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.version }}"
+          notes_file="$(mktemp)"
 
-            const existing = await github.rest.pulls.list({
-              owner,
-              repo,
-              head,
-              base,
-              state: "open",
-            });
+          {
+            echo "## Changes"
+            echo
+            if [ -n "${PREVIOUS_TAG:-}" ]; then
+              echo "Compare: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${version}"
+              echo
+              git log --reverse --format="- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))" "${PREVIOUS_TAG}..HEAD"
+            else
+              echo "Initial release."
+              echo
+              git log --reverse --format="- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))"
+            fi
+          } > "$notes_file"
 
-            if (existing.data.length > 0) {
-              core.info(`PR already exists: ${existing.data[0].html_url}`);
-              return;
-            }
+          gh release create "$version" \
+            --title "$version" \
+            --notes-file "$notes_file" \
+            internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
+            internal/ffi/lib/linux_amd64/libmonty_go_ffi.so \
+            internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so \
+            internal/ffi/lib/linux_arm64/libmonty_go_ffi.so \
+            internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
+            internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
+            internal/ffi/checksums.txt
 
-            const body = [
-              "This PR was created by the `release-prep` workflow.",
-              "",
-              "Updated artifacts:",
-              "- `Cargo.lock`",
-              "- `internal/ffi/include/monty_go_ffi.h`",
-              "- `internal/ffi/lib/...` shared libraries",
-              "- `internal/ffi/checksums.txt`",
-            ].join("\n");
-
-            const pr = await github.rest.pulls.create({
-              owner,
-              repo,
-              head,
-              base,
-              title: process.env.PR_TITLE,
-              body,
-            });
-
-            core.info(`Created PR: ${pr.data.html_url}`);
+      - name: Warm the Go module proxy
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.version }}"
+          GOPROXY=https://proxy.golang.org go list -m "github.com/${{ github.repository }}@$version"

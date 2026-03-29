@@ -28,11 +28,21 @@ monty = { path = "../monty/crates/monty" }
 monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
-## Release-Prep Workflow
+## Release Workflow
 
-Before tagging, run the `release-prep` GitHub Actions workflow. It:
+The only supported release entrypoint is:
 
-- builds the tracked shared libraries:
+```bash
+make release
+```
+
+That target fetches tags from `origin`, computes the next patch release from the
+latest semver tag (for example `v0.0.13` -> `v0.0.14`), and dispatches the
+`release` GitHub Actions workflow on `main`. If you need to override the
+version explicitly, use `make release VERSION=vX.Y.Z`. The workflow:
+
+- validates the requested version and ensures the tag does not already exist
+- rebuilds the tracked shared libraries for:
   - `darwin/arm64`
   - `linux/amd64` (GNU/glibc)
   - `linux/arm64` (GNU/glibc)
@@ -40,12 +50,20 @@ Before tagging, run the `release-prep` GitHub Actions workflow. It:
   - `linux/arm64` (musl/Alpine)
   - `windows/amd64`
 - regenerates `internal/ffi/include/monty_go_ffi.h` exactly once
-- updates `internal/ffi/lib/...`
-- refreshes `internal/ffi/checksums.txt`
-- opens a release-prep branch and pull request automatically
+- updates `Cargo.toml`, `Cargo.lock`, `internal/ffi/lib/...`, and `internal/ffi/checksums.txt`
+- reruns release validation on the assembled tree:
+  - `CGO_ENABLED=0 go test ./...`
+  - `go vet ./...`
+  - `cd examples && CGO_ENABLED=0 go run ./cmd/example`
+- commits the release to `main`
+- tags the release
+- creates the GitHub release with attached shared libraries and checksums, and
+  generates release notes from the exact git range since the previous tag
+- warms the Go module proxy with `go list -m`, which is the trigger `pkg.go.dev`
+  and the module mirror need
 
-The workflow is the default path because the repo must contain the updated
-shared libraries before a tag is created.
+This workflow assumes GitHub Actions is allowed to push to `main` and create
+releases for the repository.
 
 Current CI coverage:
 
@@ -85,12 +103,13 @@ Commit the updated files:
 - `internal/ffi/lib/...` shared libraries only
 - `internal/ffi/checksums.txt`
 
-## Tagging
+## Post-Release Verification
 
-After the release-prep PR is merged and CI is green:
+After the workflow completes:
 
-1. Create and push the release tag, for example `v0.0.8`.
-2. Optionally create a GitHub release and upload the same shared libraries and checksum
-   file for convenience.
-3. Verify the tagged package page on `pkg.go.dev`, including package docs, examples,
-   and detected license metadata.
+1. Verify the GitHub release exists for the requested tag.
+2. Verify the tagged package pages on `pkg.go.dev`, including package docs,
+   examples, and detected license metadata.
+3. If the release workflow fails after pushing the release commit but before
+   creating the tag or GitHub release, fix forward with a new version rather
+   than mutating an existing tag.

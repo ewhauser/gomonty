@@ -287,71 +287,37 @@ git push -u origin ewhauser/<branch-name>
 gh pr create --title "..." --body "..."
 ```
 
-## Step 9: Merge PR and trigger release-prep
+## Step 9: Merge PR and trigger the release workflow
 
 After the PR is reviewed and merged:
 
-1. Trigger the `release-prep` GitHub Actions workflow which builds all 6 platform shared libraries:
+1. Trigger the single release entrypoint from a local checkout:
 
 ```bash
-gh workflow run release-prep.yml
+make release
 ```
 
-2. The workflow builds for: darwin-arm64, linux-amd64, linux-arm64, linux-amd64-musl, linux-arm64-musl, windows-amd64.
+2. The Make target fetches tags from `origin`, computes the next patch semver
+   tag, and dispatches the `release.yml` GitHub Actions workflow on `main`. If
+   a non-patch version is required, pass `VERSION=vX.Y.Z`.
 
-3. It creates a branch and attempts to open a PR. If the repo doesn't allow Actions to create PRs, create it manually from the `release-prep/run-*` branch:
+3. The workflow builds for: darwin-arm64, linux-amd64, linux-arm64, linux-amd64-musl, linux-arm64-musl, windows-amd64.
 
-```bash
-# Find the release-prep branch
-gh api repos/ewhauser/gomonty/branches --jq '.[].name' | grep release-prep
+4. It updates the tracked release files on `main`, tags the release, creates the
+   GitHub release with a commit-by-commit changelog since the previous tag, and
+   warms the Go proxy so `pkg.go.dev` can discover the new version.
 
-# Create the PR manually
-gh pr create --head "release-prep/<branch-suffix>" --base main \
-  --title "Release prep: <description>" --body "..."
-```
-
-4. Merge the release-prep PR once CI is green.
-
-**Important**: The code changes PR must be merged to `main` before triggering release-prep, because the workflow checks out `main`.
+**Important**: The code changes PR must be merged to `main` before triggering the
+release workflow, because the workflow runs from `main` and publishes directly
+from that branch.
 
 ## Step 10: Tag and release
 
-After the release-prep PR is merged and CI is green on `main`:
-
-1. Determine the next version. Check the current version in `Cargo.toml` (`workspace.package.version`) and the latest git tag:
-
-```bash
-git tag --sort=-v:refname | head -5
-```
-
-2. Pull the latest `main` (which now includes the release-prep artifacts), then create and push the tag:
-
-```bash
-git checkout main && git pull
-git tag v<next-version>
-git push origin v<next-version>
-```
-
-3. Create a GitHub release. Include a summary of what changed (new types, upstream version bump, etc.) and attach the shared libraries and checksums for convenience:
-
-```bash
-gh release create v<next-version> \
-  --title "v<next-version>" \
-  --notes "Bump upstream monty to v<upstream-version>.
-
-Changes:
-- <summary of new types/features>
-- <other notable changes>" \
-  internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
-  internal/ffi/lib/linux_amd64/libmonty_go_ffi.so \
-  internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so \
-  internal/ffi/lib/linux_arm64/libmonty_go_ffi.so \
-  internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
-  internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
-  internal/ffi/checksums.txt
-```
-
-The shared libraries must be committed in the tagged tree because Go module consumers fetch the tagged source via `go get` — they don't download GitHub release assets. The release assets are optional convenience copies.
+The workflow handles the version bump in `Cargo.toml`, shared-library refresh,
+tag creation, GitHub release creation, and Go proxy warm-up. The shared
+libraries still must be committed in the tagged tree because Go module
+consumers fetch the tagged source via `go get` — they don't download GitHub
+release assets. The release assets remain optional convenience copies.
 
 ## Common pitfalls
 

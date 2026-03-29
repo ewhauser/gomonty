@@ -233,4 +233,4 @@ monty = { path = "../monty/crates/monty" }
 monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
-See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the release-prep workflow that refreshes the tracked shared libraries and checksums for each tag.
+See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the single `make release` workflow that refreshes tracked shared libraries, tags the release, and warms the Go module proxy.
