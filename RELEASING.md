@@ -51,6 +51,8 @@ Current CI coverage:
 
 - native `CGO_ENABLED=0` Go tests on Linux, macOS, and Windows
 - build verification for musl Linux shared libraries
+- `go vet ./...`
+- a smoke run of the standalone example module under `examples/`
 
 ## Why The Shared Libraries Must Be Committed Before Tagging
 
@@ -80,7 +82,7 @@ Commit the updated files:
 
 - `Cargo.lock`
 - `internal/ffi/include/monty_go_ffi.h`
-- `internal/ffi/lib/...`
+- `internal/ffi/lib/...` shared libraries only
 - `internal/ffi/checksums.txt`
 
 ## Tagging
@@ -90,3 +92,5 @@ After the release-prep PR is merged and CI is green:
 1. Create and push the release tag, for example `v0.0.8`.
 2. Optionally create a GitHub release and upload the same shared libraries and checksum
    file for convenience.
+3. Verify the tagged package page on `pkg.go.dev`, including package docs, examples,
+   and detected license metadata.

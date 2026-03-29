@@ -2,6 +2,8 @@
 
 `gomonty` is an experimental standalone repository for the Go bindings to [Monty](https://github.com/pydantic/monty). The Go package keeps the copied binding API and package name `monty`, while the Rust FFI crate is split out so it can build against upstream Monty through pinned Cargo git dependencies.
 
+Documentation: https://pkg.go.dev/github.com/ewhauser/gomonty
+
 ## Status
 
 - Experimental.
@@ -42,7 +44,7 @@ CGO_ENABLED=0 go test ./...
 
 Requirements:
 
-- Go 1.24+
+- Go 1.25+
 - Rust toolchain
 - Python available on `PATH`, or `PYO3_PYTHON` set explicitly
 - `cbindgen` only when regenerating `internal/ffi/include/monty_go_ffi.h`
@@ -71,7 +73,7 @@ go get github.com/ewhauser/gomonty@latest
 Or in `go.mod`:
 
 ```go
-require github.com/ewhauser/gomonty latest
+require github.com/ewhauser/gomonty vX.Y.Z
 ```
 
 Then import and use it:
