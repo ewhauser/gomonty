@@ -305,6 +305,13 @@ jobs:
         run: |
           version="${{ github.event.inputs.version }}"
           notes_file="$(mktemp)"
+          assets_dir="$(mktemp -d)"
+
+          cleanup() {
+            rm -f "$notes_file"
+            rm -rf "$assets_dir"
+          }
+          trap cleanup EXIT
 
           {
             echo "## Changes"
@@ -320,16 +327,24 @@ jobs:
             fi
           } > "$notes_file"
 
+          cp internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib "$assets_dir/monty_go_ffi-darwin-arm64.dylib"
+          cp internal/ffi/lib/linux_amd64/libmonty_go_ffi.so "$assets_dir/monty_go_ffi-linux-amd64.so"
+          cp internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so "$assets_dir/monty_go_ffi-linux-amd64-musl.so"
+          cp internal/ffi/lib/linux_arm64/libmonty_go_ffi.so "$assets_dir/monty_go_ffi-linux-arm64.so"
+          cp internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so "$assets_dir/monty_go_ffi-linux-arm64-musl.so"
+          cp internal/ffi/lib/windows_amd64/monty_go_ffi.dll "$assets_dir/monty_go_ffi-windows-amd64.dll"
+          cp internal/ffi/checksums.txt "$assets_dir/checksums.txt"
+
           gh release create "$version" \
             --title "$version" \
             --notes-file "$notes_file" \
-            internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
-            internal/ffi/lib/linux_amd64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
-            internal/ffi/checksums.txt
+            "$assets_dir/monty_go_ffi-darwin-arm64.dylib" \
+            "$assets_dir/monty_go_ffi-linux-amd64.so" \
+            "$assets_dir/monty_go_ffi-linux-amd64-musl.so" \
+            "$assets_dir/monty_go_ffi-linux-arm64.so" \
+            "$assets_dir/monty_go_ffi-linux-arm64-musl.so" \
+            "$assets_dir/monty_go_ffi-windows-amd64.dll" \
+            "$assets_dir/checksums.txt"
 
       - name: Warm the Go module proxy
         shell: bash

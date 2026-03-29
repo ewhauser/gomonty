@@ -34,6 +34,31 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_VERSION"]
+          version_no_v = version[1:] if version.startswith("v") else version
+          path = Path("Cargo.toml")
+          updated, count = re.subn(
+              r'^version = "[^"]+"',
+              f'version = "{version_no_v}"',
+              path.read_text(),
+              count=1,
+              flags=re.M,
+          )
+          if count != 1:
+              raise SystemExit("failed to update Cargo.toml version")
+          path.write_text(updated)
+          PY
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -102,6 +127,31 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_VERSION"]
+          version_no_v = version[1:] if version.startswith("v") else version
+          path = Path("Cargo.toml")
+          updated, count = re.subn(
+              r'^version = "[^"]+"',
+              f'version = "{version_no_v}"',
+              path.read_text(),
+              count=1,
+              flags=re.M,
+          )
+          if count != 1:
+              raise SystemExit("failed to update Cargo.toml version")
+          path.write_text(updated)
+          PY
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -129,6 +179,31 @@ jobs:
     needs: header-and-linux-amd64
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_VERSION"]
+          version_no_v = version[1:] if version.startswith("v") else version
+          path = Path("Cargo.toml")
+          updated, count = re.subn(
+              r'^version = "[^"]+"',
+              f'version = "{version_no_v}"',
+              path.read_text(),
+              count=1,
+              flags=re.M,
+          )
+          if count != 1:
+              raise SystemExit("failed to update Cargo.toml version")
+          path.write_text(updated)
+          PY
 
       - name: Build shared library in musl container
         shell: bash
@@ -159,6 +234,31 @@ jobs:
     needs: header-and-linux-amd64
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_VERSION"]
+          version_no_v = version[1:] if version.startswith("v") else version
+          path = Path("Cargo.toml")
+          updated, count = re.subn(
+              r'^version = "[^"]+"',
+              f'version = "{version_no_v}"',
+              path.read_text(),
+              count=1,
+              flags=re.M,
+          )
+          if count != 1:
+              raise SystemExit("failed to update Cargo.toml version")
+          path.write_text(updated)
+          PY
 
       - name: Build shared library in musl container
         shell: bash
