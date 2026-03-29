@@ -30,7 +30,9 @@ monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 
 ## Release Workflow
 
-The only supported release entrypoint is:
+The release flow has two explicit steps.
+
+1. Prepare the release PR:
 
 ```bash
 make release
@@ -38,7 +40,7 @@ make release
 
 That target fetches tags from `origin`, computes the next patch release from the
 latest semver tag (for example `v0.0.13` -> `v0.0.14`), and dispatches the
-`release` GitHub Actions workflow on `main`. If you need to override the
+`release-prep` GitHub Actions workflow on `main`. If you need to override the
 version explicitly, use `make release VERSION=vX.Y.Z`. The workflow:
 
 - validates the requested version and ensures the tag does not already exist
@@ -55,15 +57,34 @@ version explicitly, use `make release VERSION=vX.Y.Z`. The workflow:
   - `CGO_ENABLED=0 go test ./...`
   - `go vet ./...`
   - `cd examples && CGO_ENABLED=0 go run ./cmd/example`
-- commits the release to `main`
-- tags the release
+- commits the release tree to a `release-prep/vX.Y.Z` branch
+- opens a pull request back to `main`
+
+After that PR merges, publish the release from the merged `main` commit:
+
+```bash
+make publish-release VERSION=vX.Y.Z
+```
+
+That target dispatches the `release` GitHub Actions workflow on `main`. The
+workflow:
+
+- validates the requested version and ensures the tag does not already exist
+- rebuilds the release assets and verifies the checked-in release tree on `main`
+  already matches the fresh build outputs
+- reruns release validation on the assembled tree:
+  - `CGO_ENABLED=0 go test ./...`
+  - `go vet ./...`
+  - `cd examples && CGO_ENABLED=0 go run ./cmd/example`
+- tags the merged `main` commit
 - creates the GitHub release with attached shared libraries and checksums, and
   generates release notes from the exact git range since the previous tag
 - warms the Go module proxy with `go list -m`, which is the trigger `pkg.go.dev`
   and the module mirror need
 
-This workflow assumes GitHub Actions is allowed to push to `main` and create
-releases for the repository.
+This flow assumes GitHub Actions can push tags and create releases. It does not
+require Actions to bypass the repository rule that changes to `main` must land
+through a pull request.
 
 Current CI coverage:
 
@@ -98,6 +119,7 @@ scripts/build-go-ffi.sh x86_64-pc-windows-msvc
 
 Commit the updated files:
 
+- `Cargo.toml`
 - `Cargo.lock`
 - `internal/ffi/include/monty_go_ffi.h`
 - `internal/ffi/lib/...` shared libraries only
@@ -105,11 +127,10 @@ Commit the updated files:
 
 ## Post-Release Verification
 
-After the workflow completes:
+After the publish workflow completes:
 
 1. Verify the GitHub release exists for the requested tag.
 2. Verify the tagged package pages on `pkg.go.dev`, including package docs,
    examples, and detected license metadata.
-3. If the release workflow fails after pushing the release commit but before
-   creating the tag or GitHub release, fix forward with a new version rather
-   than mutating an existing tag.
+3. If the publish workflow fails after pushing the tag, fix forward with a new
+   version rather than mutating an existing tag.

@@ -1,4 +1,4 @@
-.PHONY: release
+.PHONY: release publish-release
 
 release:
 	@command -v gh >/dev/null 2>&1 || { echo "gh is required"; exit 1; }
@@ -21,6 +21,19 @@ release:
 		v*) ;; \
 		*) echo "VERSION must start with v, for example v0.0.9"; exit 1 ;; \
 	esac; \
-	gh workflow run release.yml --ref main -f version="$$next_version"; \
-	echo "Triggered release workflow for $$next_version."
+	gh workflow run release-prep.yml --ref main -f version="$$next_version"; \
+	echo "Triggered release-prep workflow for $$next_version."; \
+	echo "After the PR merges, run: make publish-release VERSION=$$next_version"
+	@echo "Watch with: gh run list --workflow=release-prep.yml --limit 1"
+
+publish-release:
+	@command -v gh >/dev/null 2>&1 || { echo "gh is required"; exit 1; }
+	@gh auth status >/dev/null
+	@[ -n "$(VERSION)" ] || { echo "VERSION is required, for example make publish-release VERSION=v0.0.14"; exit 1; }
+	@case "$(VERSION)" in \
+		v*) ;; \
+		*) echo "VERSION must start with v, for example v0.0.14"; exit 1 ;; \
+	esac
+	@gh workflow run release.yml --ref main -f version="$(VERSION)"
+	@echo "Triggered release workflow for $(VERSION)."
 	@echo "Watch with: gh run list --workflow=release.yml --limit 1"

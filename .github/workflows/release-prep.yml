@@ -1,4 +1,4 @@
-name: release
+name: release-prep
 
 on:
   workflow_dispatch:
@@ -10,9 +10,10 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
-  group: release
+  group: release-prep-${{ github.event.inputs.version }}
   cancel-in-progress: false
 
 jobs:
@@ -182,15 +183,13 @@ jobs:
           name: ffi-linux-arm64-musl
           path: internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
 
-  publish:
+  open-pr:
     runs-on: ubuntu-latest
     needs:
       - header-and-linux-amd64
       - shared-libraries
       - musl-shared-library-amd64
       - musl-shared-library-arm64
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -223,26 +222,19 @@ jobs:
           pattern: ffi-*
           path: .artifacts
 
-      - name: Prepare release verification tree
+      - name: Prepare release tree
         shell: bash
         run: |
           version="${{ github.event.inputs.version }}"
           version_no_v="${version#v}"
 
           git fetch --tags origin
-          previous_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
           if git rev-parse --verify --quiet "refs/tags/$version" >/dev/null; then
             echo "Tag $version already exists" >&2
             exit 1
           fi
-          echo "PREVIOUS_TAG=$previous_tag" >> "$GITHUB_ENV"
 
-          current_version="$(sed -n -E '0,/^version = "([^"]+)"/s//\1/p' Cargo.toml)"
-          if [ "$current_version" != "$version_no_v" ]; then
-            echo "Cargo.toml version is $current_version, expected $version_no_v on main." >&2
-            echo "Run release-prep.yml for $version, merge that PR, and retry release.yml." >&2
-            exit 1
-          fi
+          sed -i -E '0,/^version = "[^"]+"/s//version = "'"$version_no_v"'"/' Cargo.toml
 
           find internal/ffi/lib -type f \( -name '*.a' -o -name '*.lib' \) -delete
 
@@ -275,13 +267,6 @@ jobs:
             internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
             > internal/ffi/checksums.txt
 
-          if ! git diff --quiet -- Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt; then
-            echo "Checked-in release artifacts on main do not match freshly built outputs." >&2
-            echo "Run release-prep.yml for $version, merge that PR, and retry release.yml." >&2
-            git status --short -- Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
-            exit 1
-          fi
-
       - name: Validate release tree
         shell: bash
         run: |
@@ -292,47 +277,72 @@ jobs:
             CGO_ENABLED=0 go run ./cmd/example
           )
 
-      - name: Tag and push
+      - name: Prepare branch metadata
         shell: bash
         run: |
           version="${{ github.event.inputs.version }}"
+          branch="release-prep/$version"
+          echo "BRANCH_NAME=$branch" >> "$GITHUB_ENV"
+          echo "PR_TITLE=Release $version" >> "$GITHUB_ENV"
 
-          git tag "$version"
-          git push origin "$version"
-
-      - name: Create GitHub release
+      - name: Commit and push changes
         shell: bash
         run: |
-          version="${{ github.event.inputs.version }}"
-          notes_file="$(mktemp)"
+          if ! git status --short -- Cargo.toml Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt | grep -q .; then
+            echo "Release tree is already current on main; skipping PR creation."
+            echo "SKIP_PR=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
 
-          {
-            echo "## Changes"
-            echo
-            if [ -n "${PREVIOUS_TAG:-}" ]; then
-              echo "Compare: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${version}"
-              echo
-              git log --reverse --format="- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))" "${PREVIOUS_TAG}..HEAD"
-            else
-              echo "Initial release."
-              echo
-              git log --reverse --format="- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))"
-            fi
-          } > "$notes_file"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH_NAME"
+          git add Cargo.toml Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
+          git commit -m "Release ${{ github.event.inputs.version }}"
+          git push --set-upstream origin "$BRANCH_NAME"
 
-          gh release create "$version" \
-            --title "$version" \
-            --notes-file "$notes_file" \
-            internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
-            internal/ffi/lib/linux_amd64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
-            internal/ffi/checksums.txt
+      - name: Open release-prep PR
+        if: env.SKIP_PR != '1'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const head = `${owner}:${process.env.BRANCH_NAME}`;
+            const base = context.payload.repository.default_branch;
 
-      - name: Warm the Go module proxy
-        shell: bash
-        run: |
-          version="${{ github.event.inputs.version }}"
-          GOPROXY=https://proxy.golang.org go list -m "github.com/${{ github.repository }}@$version"
+            const existing = await github.rest.pulls.list({
+              owner,
+              repo,
+              head,
+              base,
+              state: "open",
+            });
+
+            if (existing.data.length > 0) {
+              core.info(`PR already exists: ${existing.data[0].html_url}`);
+              return;
+            }
+
+            const version = context.payload.inputs.version;
+            const body = [
+              `This PR prepares ${version} for release.`,
+              "",
+              "Updated files:",
+              "- `Cargo.toml`",
+              "- `Cargo.lock`",
+              "- `internal/ffi/include/monty_go_ffi.h`",
+              "- `internal/ffi/lib/...` shared libraries",
+              "- `internal/ffi/checksums.txt`",
+            ].join("\n");
+
+            const pr = await github.rest.pulls.create({
+              owner,
+              repo,
+              head,
+              base,
+              title: process.env.PR_TITLE,
+              body,
+            });
+
+            core.info(`Created PR: ${pr.data.html_url}`);
