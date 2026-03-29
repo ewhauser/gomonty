@@ -37,6 +37,10 @@ const (
 	valueKindFunction   ValueKind = "function"
 	valueKindRepr       ValueKind = "repr"
 	valueKindCycle      ValueKind = "cycle"
+	valueKindDate       ValueKind = "date"
+	valueKindDateTime   ValueKind = "datetime"
+	valueKindTimeDelta  ValueKind = "timedelta"
+	valueKindTimeZone   ValueKind = "timezone"
 )
 
 // Value is the public tagged union used by the Go bindings.
@@ -67,6 +71,39 @@ type Set []Value
 
 // FrozenSet is the explicit frozenset shape used by the bindings.
 type FrozenSet []Value
+
+// Date represents a Python datetime.date value.
+type Date struct {
+	Year  int32 `json:"year"`
+	Month uint8 `json:"month"`
+	Day   uint8 `json:"day"`
+}
+
+// DateTime represents a Python datetime.datetime value.
+type DateTime struct {
+	Year          int32   `json:"year"`
+	Month         uint8   `json:"month"`
+	Day           uint8   `json:"day"`
+	Hour          uint8   `json:"hour"`
+	Minute        uint8   `json:"minute"`
+	Second        uint8   `json:"second"`
+	Microsecond   uint32  `json:"microsecond"`
+	OffsetSeconds *int32  `json:"offset_seconds,omitempty"`
+	TimezoneName  *string `json:"timezone_name,omitempty"`
+}
+
+// TimeDelta represents a Python datetime.timedelta value.
+type TimeDelta struct {
+	Days         int32 `json:"days"`
+	Seconds      int32 `json:"seconds"`
+	Microseconds int32 `json:"microseconds"`
+}
+
+// TimeZone represents a Python datetime.timezone fixed-offset value.
+type TimeZone struct {
+	OffsetSeconds int32   `json:"offset_seconds"`
+	Name          *string `json:"name,omitempty"`
+}
 
 // NamedTuple carries the explicit named-tuple wire shape.
 type NamedTuple struct {
@@ -386,6 +423,26 @@ func CycleValue(value string) Value {
 	return Value{kind: valueKindCycle, data: value}
 }
 
+// DateValue returns a date value.
+func DateValue(date Date) Value {
+	return Value{kind: valueKindDate, data: date}
+}
+
+// DateTimeValue returns a datetime value.
+func DateTimeValue(dt DateTime) Value {
+	return Value{kind: valueKindDateTime, data: dt}
+}
+
+// TimeDeltaValue returns a timedelta value.
+func TimeDeltaValue(td TimeDelta) Value {
+	return Value{kind: valueKindTimeDelta, data: td}
+}
+
+// TimeZoneValue returns a timezone value.
+func TimeZoneValue(tz TimeZone) Value {
+	return Value{kind: valueKindTimeZone, data: tz}
+}
+
 // Kind reports the value variant.
 func (v Value) Kind() ValueKind {
 	if v.kind == "" {
@@ -496,6 +553,30 @@ func (v Value) Exception() (Exception, bool) {
 	return value, ok
 }
 
+// Date returns the date payload if present.
+func (v Value) Date() (Date, bool) {
+	value, ok := v.data.(Date)
+	return value, ok
+}
+
+// DateTime returns the datetime payload if present.
+func (v Value) DateTime() (DateTime, bool) {
+	value, ok := v.data.(DateTime)
+	return value, ok
+}
+
+// TimeDelta returns the timedelta payload if present.
+func (v Value) TimeDelta() (TimeDelta, bool) {
+	value, ok := v.data.(TimeDelta)
+	return value, ok
+}
+
+// TimeZone returns the timezone payload if present.
+func (v Value) TimeZone() (TimeZone, bool) {
+	value, ok := v.data.(TimeZone)
+	return value, ok
+}
+
 // ValueOf converts a supported Go value into a Monty Value.
 func ValueOf(value any) (Value, error) {
 	switch value := value.(type) {
@@ -573,6 +654,14 @@ func ValueOf(value any) (Value, error) {
 		return FunctionValue(value), nil
 	case Exception:
 		return ExceptionValue(value), nil
+	case Date:
+		return DateValue(value), nil
+	case DateTime:
+		return DateTimeValue(value), nil
+	case TimeDelta:
+		return TimeDeltaValue(value), nil
+	case TimeZone:
+		return TimeZoneValue(value), nil
 	case *big.Int:
 		return BigInt(value), nil
 	case big.Int:
@@ -821,6 +910,48 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			Kind        ValueKind `json:"kind"`
 			Placeholder string    `json:"placeholder"`
 		}{Kind: valueKindCycle, Placeholder: v.data.(string)})
+	case valueKindDate:
+		payload := v.data.(Date)
+		return json.Marshal(struct {
+			Kind  ValueKind `json:"kind"`
+			Year  int32     `json:"year"`
+			Month uint8     `json:"month"`
+			Day   uint8     `json:"day"`
+		}{Kind: valueKindDate, Year: payload.Year, Month: payload.Month, Day: payload.Day})
+	case valueKindDateTime:
+		payload := v.data.(DateTime)
+		return json.Marshal(struct {
+			Kind          ValueKind `json:"kind"`
+			Year          int32     `json:"year"`
+			Month         uint8     `json:"month"`
+			Day           uint8     `json:"day"`
+			Hour          uint8     `json:"hour"`
+			Minute        uint8     `json:"minute"`
+			Second        uint8     `json:"second"`
+			Microsecond   uint32    `json:"microsecond"`
+			OffsetSeconds *int32    `json:"offset_seconds,omitempty"`
+			TimezoneName  *string   `json:"timezone_name,omitempty"`
+		}{
+			Kind: valueKindDateTime, Year: payload.Year, Month: payload.Month,
+			Day: payload.Day, Hour: payload.Hour, Minute: payload.Minute,
+			Second: payload.Second, Microsecond: payload.Microsecond,
+			OffsetSeconds: payload.OffsetSeconds, TimezoneName: payload.TimezoneName,
+		})
+	case valueKindTimeDelta:
+		payload := v.data.(TimeDelta)
+		return json.Marshal(struct {
+			Kind         ValueKind `json:"kind"`
+			Days         int32     `json:"days"`
+			Seconds      int32     `json:"seconds"`
+			Microseconds int32     `json:"microseconds"`
+		}{Kind: valueKindTimeDelta, Days: payload.Days, Seconds: payload.Seconds, Microseconds: payload.Microseconds})
+	case valueKindTimeZone:
+		payload := v.data.(TimeZone)
+		return json.Marshal(struct {
+			Kind          ValueKind `json:"kind"`
+			OffsetSeconds int32     `json:"offset_seconds"`
+			Name          *string   `json:"name,omitempty"`
+		}{Kind: valueKindTimeZone, OffsetSeconds: payload.OffsetSeconds, Name: payload.Name})
 	default:
 		return nil, fmt.Errorf("unsupported value kind %q", v.kind)
 	}
@@ -983,6 +1114,30 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = CycleValue(payload.Placeholder)
+	case valueKindDate:
+		var payload Date
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = DateValue(payload)
+	case valueKindDateTime:
+		var payload DateTime
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = DateTimeValue(payload)
+	case valueKindTimeDelta:
+		var payload TimeDelta
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = TimeDeltaValue(payload)
+	case valueKindTimeZone:
+		var payload TimeZone
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = TimeZoneValue(payload)
 	default:
 		return fmt.Errorf("unknown value kind %q", envelope.Kind)
 	}
@@ -1007,6 +1162,40 @@ func (v Value) String() string {
 		return v.data.(Exception).Error()
 	case valueKindFunction:
 		return v.data.(Function).Name
+	case valueKindDate:
+		d := v.data.(Date)
+		return fmt.Sprintf("%04d-%02d-%02d", d.Year, d.Month, d.Day)
+	case valueKindDateTime:
+		dt := v.data.(DateTime)
+		base := fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second)
+		if dt.Microsecond != 0 {
+			base += fmt.Sprintf(".%06d", dt.Microsecond)
+		}
+		if dt.OffsetSeconds != nil {
+			offset := *dt.OffsetSeconds
+			sign := "+"
+			if offset < 0 {
+				sign = "-"
+				offset = -offset
+			}
+			base += fmt.Sprintf("%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
+		}
+		return base
+	case valueKindTimeDelta:
+		td := v.data.(TimeDelta)
+		return fmt.Sprintf("timedelta(days=%d, seconds=%d, microseconds=%d)", td.Days, td.Seconds, td.Microseconds)
+	case valueKindTimeZone:
+		tz := v.data.(TimeZone)
+		if tz.Name != nil {
+			return *tz.Name
+		}
+		offset := tz.OffsetSeconds
+		sign := "+"
+		if offset < 0 {
+			sign = "-"
+			offset = -offset
+		}
+		return fmt.Sprintf("UTC%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
 	default:
 		typeName := string(v.Kind())
 		typeName = strings.ReplaceAll(typeName, "_", " ")

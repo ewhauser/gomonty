@@ -30,6 +30,10 @@ const (
 	wireValueFunction
 	wireValueRepr
 	wireValueCycle
+	wireValueDate
+	wireValueDateTime
+	wireValueTimeDelta
+	wireValueTimeZone
 )
 
 const (
@@ -74,8 +78,20 @@ type wireValue struct {
 	TypeID      uint64      `msgpack:"type_id,omitempty"`
 	Attrs       []wirePair  `msgpack:"attrs,omitempty"`
 	Frozen      bool        `msgpack:"frozen,omitempty"`
-	Docstring   *string     `msgpack:"docstring,omitempty"`
-	Placeholder string      `msgpack:"placeholder,omitempty"`
+	Docstring    *string     `msgpack:"docstring,omitempty"`
+	Placeholder  string      `msgpack:"placeholder,omitempty"`
+	Year         int32       `msgpack:"year,omitempty"`
+	Month        uint8       `msgpack:"month,omitempty"`
+	Day          uint8       `msgpack:"day,omitempty"`
+	Hour         uint8       `msgpack:"hour,omitempty"`
+	Minute       uint8       `msgpack:"minute,omitempty"`
+	Second       uint8       `msgpack:"second,omitempty"`
+	Microsecond  uint32      `msgpack:"microsecond,omitempty"`
+	OffsetSecs   *int32      `msgpack:"offset_seconds,omitempty"`
+	TimezoneName *string     `msgpack:"timezone_name,omitempty"`
+	Days         int32       `msgpack:"days,omitempty"`
+	Seconds      int32       `msgpack:"seconds,omitempty"`
+	Microseconds int32       `msgpack:"microseconds,omitempty"`
 }
 
 type wireCompileOptions struct {
@@ -485,6 +501,43 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 		return wireValue{Kind: wireValueRepr, String: value.data.(string)}, nil
 	case valueKindCycle:
 		return wireValue{Kind: wireValueCycle, Placeholder: value.data.(string)}, nil
+	case valueKindDate:
+		date := value.data.(Date)
+		return wireValue{
+			Kind:  wireValueDate,
+			Year:  date.Year,
+			Month: date.Month,
+			Day:   date.Day,
+		}, nil
+	case valueKindDateTime:
+		dt := value.data.(DateTime)
+		return wireValue{
+			Kind:         wireValueDateTime,
+			Year:         dt.Year,
+			Month:        dt.Month,
+			Day:          dt.Day,
+			Hour:         dt.Hour,
+			Minute:       dt.Minute,
+			Second:       dt.Second,
+			Microsecond:  dt.Microsecond,
+			OffsetSecs:   dt.OffsetSeconds,
+			TimezoneName: dt.TimezoneName,
+		}, nil
+	case valueKindTimeDelta:
+		td := value.data.(TimeDelta)
+		return wireValue{
+			Kind:         wireValueTimeDelta,
+			Days:         td.Days,
+			Seconds:      td.Seconds,
+			Microseconds: td.Microseconds,
+		}, nil
+	case valueKindTimeZone:
+		tz := value.data.(TimeZone)
+		return wireValue{
+			Kind:         wireValueTimeZone,
+			Days:         tz.OffsetSeconds,
+			TimezoneName: tz.Name,
+		}, nil
 	default:
 		return wireValue{}, fmt.Errorf("unsupported value kind %q", value.Kind())
 	}
@@ -574,6 +627,35 @@ func (value wireValue) toPublic() (Value, error) {
 		return ReprValue(value.String), nil
 	case wireValueCycle:
 		return CycleValue(value.Placeholder), nil
+	case wireValueDate:
+		return DateValue(Date{
+			Year:  value.Year,
+			Month: value.Month,
+			Day:   value.Day,
+		}), nil
+	case wireValueDateTime:
+		return DateTimeValue(DateTime{
+			Year:          value.Year,
+			Month:         value.Month,
+			Day:           value.Day,
+			Hour:          value.Hour,
+			Minute:        value.Minute,
+			Second:        value.Second,
+			Microsecond:   value.Microsecond,
+			OffsetSeconds: value.OffsetSecs,
+			TimezoneName:  value.TimezoneName,
+		}), nil
+	case wireValueTimeDelta:
+		return TimeDeltaValue(TimeDelta{
+			Days:         value.Days,
+			Seconds:      value.Seconds,
+			Microseconds: value.Microseconds,
+		}), nil
+	case wireValueTimeZone:
+		return TimeZoneValue(TimeZone{
+			OffsetSeconds: value.Days,
+			Name:          value.TimezoneName,
+		}), nil
 	default:
 		return Value{}, fmt.Errorf("unknown wire value kind %d", value.Kind)
 	}

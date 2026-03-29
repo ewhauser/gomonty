@@ -7,7 +7,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use monty::{ExcType, MontyException, MontyObject, ResourceLimits, StackFrame};
+use monty::{ExcType, MontyDate, MontyDateTime, MontyException, MontyObject, MontyTimeDelta, MontyTimeZone, ResourceLimits, StackFrame};
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +34,10 @@ pub const WIRE_VALUE_DATACLASS: u8 = 16;
 pub const WIRE_VALUE_FUNCTION: u8 = 17;
 pub const WIRE_VALUE_REPR: u8 = 18;
 pub const WIRE_VALUE_CYCLE: u8 = 19;
+pub const WIRE_VALUE_DATE: u8 = 20;
+pub const WIRE_VALUE_DATETIME: u8 = 21;
+pub const WIRE_VALUE_TIMEDELTA: u8 = 22;
+pub const WIRE_VALUE_TIMEZONE: u8 = 23;
 
 pub const WIRE_CALL_RESULT_RETURN: u8 = 0;
 pub const WIRE_CALL_RESULT_EXCEPTION: u8 = 1;
@@ -98,6 +102,30 @@ pub struct WireValue {
     pub docstring: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub placeholder: String,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub year: i32,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub month: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub day: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub hour: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub minute: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub second: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub microsecond: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_seconds: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone_name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub days: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub seconds: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub microseconds: i32,
 }
 
 impl WireValue {
@@ -232,6 +260,39 @@ impl WireValue {
                 placeholder: placeholder.clone(),
                 ..Self::default()
             },
+            MontyObject::Date(date) => Self {
+                kind: WIRE_VALUE_DATE,
+                year: date.year,
+                month: date.month,
+                day: date.day,
+                ..Self::default()
+            },
+            MontyObject::DateTime(datetime) => Self {
+                kind: WIRE_VALUE_DATETIME,
+                year: datetime.year,
+                month: datetime.month,
+                day: datetime.day,
+                hour: datetime.hour,
+                minute: datetime.minute,
+                second: datetime.second,
+                microsecond: datetime.microsecond,
+                offset_seconds: datetime.offset_seconds,
+                timezone_name: datetime.timezone_name.clone(),
+                ..Self::default()
+            },
+            MontyObject::TimeDelta(delta) => Self {
+                kind: WIRE_VALUE_TIMEDELTA,
+                days: delta.days,
+                seconds: delta.seconds,
+                microseconds: delta.microseconds,
+                ..Self::default()
+            },
+            MontyObject::TimeZone(tz) => Self {
+                kind: WIRE_VALUE_TIMEZONE,
+                days: tz.offset_seconds,
+                timezone_name: tz.name.clone(),
+                ..Self::default()
+            },
             MontyObject::Type(value) => Self {
                 kind: WIRE_VALUE_REPR,
                 string_value: format!("<class '{value}'>"),
@@ -324,6 +385,31 @@ impl WireValue {
             }),
             WIRE_VALUE_REPR => Err("repr values cannot be used as Monty inputs".to_owned()),
             WIRE_VALUE_CYCLE => Err("cycle placeholders cannot be used as Monty inputs".to_owned()),
+            WIRE_VALUE_DATE => Ok(MontyObject::Date(MontyDate {
+                year: self.year,
+                month: self.month,
+                day: self.day,
+            })),
+            WIRE_VALUE_DATETIME => Ok(MontyObject::DateTime(MontyDateTime {
+                year: self.year,
+                month: self.month,
+                day: self.day,
+                hour: self.hour,
+                minute: self.minute,
+                second: self.second,
+                microsecond: self.microsecond,
+                offset_seconds: self.offset_seconds,
+                timezone_name: self.timezone_name,
+            })),
+            WIRE_VALUE_TIMEDELTA => Ok(MontyObject::TimeDelta(MontyTimeDelta {
+                days: self.days,
+                seconds: self.seconds,
+                microseconds: self.microseconds,
+            })),
+            WIRE_VALUE_TIMEZONE => Ok(MontyObject::TimeZone(MontyTimeZone {
+                offset_seconds: self.days,
+                name: self.timezone_name,
+            })),
             other => Err(format!("unknown wire value kind: {other}")),
         }
     }
@@ -533,12 +619,20 @@ fn is_zero_f64(value: &f64) -> bool {
     *value == 0.0
 }
 
+const fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+
+const fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
+}
+
 #[cfg(test)]
 mod tests {
     use num_bigint::BigInt;
 
     use super::WireValue;
-    use monty::{ExcType, MontyObject};
+    use monty::{ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
 
     #[test]
     fn wire_value_round_trips_nested_dicts() {
@@ -610,6 +704,100 @@ mod tests {
         let decoded = WireValue::from_monty(&original)
             .into_monty()
             .expect("exceptions should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_date() {
+        let original = MontyObject::Date(MontyDate {
+            year: 2026,
+            month: 3,
+            day: 29,
+        });
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("date should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_datetime() {
+        let original = MontyObject::DateTime(MontyDateTime {
+            year: 2026,
+            month: 3,
+            day: 29,
+            hour: 14,
+            minute: 30,
+            second: 45,
+            microsecond: 123_456,
+            offset_seconds: Some(3600),
+            timezone_name: Some("UTC+01:00".to_owned()),
+        });
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("datetime should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_naive_datetime() {
+        let original = MontyObject::DateTime(MontyDateTime {
+            year: 2026,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: None,
+            timezone_name: None,
+        });
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("naive datetime should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_timedelta() {
+        let original = MontyObject::TimeDelta(MontyTimeDelta {
+            days: -1,
+            seconds: 3600,
+            microseconds: 500_000,
+        });
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("timedelta should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_timezone() {
+        let original = MontyObject::TimeZone(MontyTimeZone {
+            offset_seconds: -18000,
+            name: Some("EST".to_owned()),
+        });
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("timezone should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_utc_timezone() {
+        let original = MontyObject::TimeZone(MontyTimeZone {
+            offset_seconds: 0,
+            name: None,
+        });
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("utc timezone should round-trip");
         assert_eq!(decoded, original);
     }
 }
