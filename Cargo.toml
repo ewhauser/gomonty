@@ -5,7 +5,7 @@ members = ["crates/gomonty-worker", "crates/monty-go-ffi"]
 [workspace.package]
 edition = "2024"
 version = "0.0.14"
-rust-version = "1.90"
+rust-version = "1.95"
 license = "MIT"
 authors = ["Eric Hauser"]
 categories = ["compilers", "emulators", "development-tools"]
