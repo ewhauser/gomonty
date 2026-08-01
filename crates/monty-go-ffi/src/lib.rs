@@ -386,10 +386,23 @@ impl StoredProgress {
                     FfiError::Api("completed progress no longer owns its REPL".to_owned())
                 }),
             Self::Active(active) if active.is_repl => {
-                let rollback = active.rollback.ok_or_else(|| {
+                let ActiveProgress {
+                    pool,
+                    checkout,
+                    event: _,
+                    options,
+                    script_name,
+                    is_repl: _,
+                    rollback,
+                } = active;
+                let rollback = rollback.ok_or_else(|| {
                     FfiError::Api("REPL snapshot is missing its rollback checkpoint".to_owned())
                 })?;
-                restore_idle_session(active.pool, active.options, active.script_name, rollback)
+                // Restoring the rollback state needs a checkout. Release the
+                // suspended worker first so a saturated pool cannot deadlock
+                // while abandoning a snapshot.
+                drop(checkout);
+                restore_idle_session(pool, options, script_name, rollback)
                     .map(|session| MontyGoRepl {
                         inner: Some(session),
                     })

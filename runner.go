@@ -159,31 +159,17 @@ func LoadSnapshot(data []byte) (Progress, error) {
 	return progressFromResult(result.Progress, result.ProgressPayload, nil)
 }
 
-// LoadReplSnapshot restores a serialized REPL snapshot and also returns a base
-// REPL handle that can be used to abandon the in-flight snippet.
+// LoadReplSnapshot restores a serialized REPL snapshot and also returns its
+// owning REPL. The REPL remains single-flight until the snapshot completes or
+// is abandoned.
 func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
-	owner := &Repl{state: &replState{}}
-
-	primary := ffi.LoadProgress(data)
-	if primary.Error != nil {
-		return nil, nil, newError(primary.Error)
+	owner := &Repl{state: &replState{inFlight: true}}
+	result := ffi.LoadProgress(data)
+	if result.Error != nil {
+		return nil, nil, newError(result.Error)
 	}
 
-	backup := ffi.LoadProgress(data)
-	if backup.Error != nil {
-		primary.Progress.Close()
-		return nil, nil, newError(backup.Error)
-	}
-
-	replResult := backup.Progress.TakeRepl()
-	backup.Progress.Close()
-	if replResult.Error != nil {
-		primary.Progress.Close()
-		return nil, nil, newError(replResult.Error)
-	}
-	owner.state.restore(replResult.Repl)
-
-	progress, err := progressFromResult(primary.Progress, primary.ProgressPayload, owner.state)
+	progress, err := progressFromResult(result.Progress, result.ProgressPayload, owner.state)
 	if err != nil {
 		return nil, nil, err
 	}

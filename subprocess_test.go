@@ -160,6 +160,9 @@ func TestReplSnapshotRestoresAndCancellationAbandonsFeed(t *testing.T) {
 	if !ok {
 		t.Fatalf("restored progress = %T, want *Snapshot", restored)
 	}
+	if _, err := owner.FeedStart(context.Background(), "40 + 2", FeedStartOptions{}); !errors.Is(err, ErrConcurrentUse) {
+		t.Fatalf("owner FeedStart while snapshot is active = %v, want ErrConcurrentUse", err)
+	}
 	restoredPID, ok := restoredCall.WorkerPID()
 	if !ok || restoredPID == originalPID {
 		t.Fatalf("restored worker PID = %d, want fresh PID distinct from %d", restoredPID, originalPID)
@@ -176,6 +179,7 @@ func TestReplSnapshotRestoresAndCancellationAbandonsFeed(t *testing.T) {
 	if err != nil || value.Raw() != int64(42) {
 		t.Fatalf("completed owner state = %#v, %v; want 42", value.Raw(), err)
 	}
+	closeTestRepl(owner)
 
 	abandoned, base, err := LoadReplSnapshot(blob)
 	if err != nil {

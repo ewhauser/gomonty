@@ -126,6 +126,12 @@ jobs:
           CGO_ENABLED: "0"
         run: go test ./...
 
+      - name: Run single-worker snapshot recovery test
+        if: matrix.name == 'linux-amd64'
+        env:
+          CGO_ENABLED: "0"
+        run: taskset --cpu-list 0 go test -run '^TestReplSnapshotRestoresAndCancellationAbandonsFeed$' -count=10 ./...
+
       - name: Run Go race tests
         if: matrix.run_go_tests
         run: go test -race -count=1 ./...
