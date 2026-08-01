@@ -56,10 +56,13 @@ type nativeAPI struct {
 	bytesFree             func(ptr *byte, len uintptr)
 	runnerFree            func(runner *cRunner)
 	replFree              func(repl *cRepl)
+	replWorkerPID         func(repl *cRepl) uint32
 	progressFree          func(progress *cProgress)
+	progressWorkerPID     func(progress *cProgress) uint32
 	errorFree             func(err *cError)
 	errorJSON             func(err *cError, out *cBytes)
 	errorDisplay          func(err *cError, format *byte, color bool, out *cBytes)
+	runtimeInit           func(workerPathPtr *byte, workerPathLen uintptr) *cError
 	runnerNew             func(codePtr *byte, codeLen uintptr, optionsPtr *byte, optionsLen uintptr, out *cRunnerResult)
 	runnerLoad            func(dataPtr *byte, dataLen uintptr, out *cRunnerResult)
 	runnerDump            func(runner *cRunner, out *cBytes, errOut **cError)
@@ -119,7 +122,7 @@ type OpResult struct {
 	ProgressPayload []byte
 	Repl            *Repl
 	Error           *Error
-	Prints          string
+	Prints          []byte
 }
 
 func ensureLoaded() error {
@@ -135,7 +138,29 @@ func ensureLoaded() error {
 			return
 		}
 		api.handle = handle
-		api.loadErr = api.register(handle)
+		if err := api.register(handle); err != nil {
+			api.loadErr = err
+			return
+		}
+
+		workerPath := os.Getenv("GOMONTY_WORKER_PATH")
+		if workerPath == "" {
+			workerPath, err = extractEmbeddedLibrary(embeddedLibs, embeddedLibraryDir, embeddedWorkerFilename, libraryCacheRoot())
+			if err != nil {
+				api.loadErr = err
+				return
+			}
+		}
+		workerPathBytes := []byte(workerPath)
+		workerPathPtr, workerPathLen := byteArgs(workerPathBytes)
+		if ffiErr := api.runtimeInit(workerPathPtr, workerPathLen); ffiErr != nil {
+			wrapped := newError(ffiErr)
+			message := wrapped.Display("type-msg", false)
+			wrapped.Close()
+			api.loadErr = fmt.Errorf("initialize Monty subprocess worker %s: %s", workerPath, message)
+			return
+		}
+		runtime.KeepAlive(workerPathBytes)
 	})
 	return api.loadErr
 }
@@ -148,10 +173,13 @@ func (a *nativeAPI) register(handle uintptr) error {
 		{"monty_go_bytes_free", &a.bytesFree},
 		{"monty_go_runner_free", &a.runnerFree},
 		{"monty_go_repl_free", &a.replFree},
+		{"monty_go_repl_worker_pid", &a.replWorkerPID},
 		{"monty_go_progress_free", &a.progressFree},
+		{"monty_go_progress_worker_pid", &a.progressWorkerPID},
 		{"monty_go_error_free", &a.errorFree},
 		{"monty_go_error_json", &a.errorJSON},
 		{"monty_go_error_display", &a.errorDisplay},
+		{"monty_go_runtime_init", &a.runtimeInit},
 		{"monty_go_runner_new", &a.runnerNew},
 		{"monty_go_runner_load", &a.runnerLoad},
 		{"monty_go_runner_dump", &a.runnerDump},
@@ -328,7 +356,7 @@ func opResultFromC(result cOpResult) OpResult {
 		ProgressPayload: takeBytes(result.progressPayload),
 		Repl:            newRepl(result.repl),
 		Error:           newError(result.err),
-		Prints:          string(takeBytes(result.prints)),
+		Prints:          takeBytes(result.prints),
 	}
 }
 
@@ -372,6 +400,14 @@ func (r *Repl) Close() {
 	r.ptr = nil
 }
 
+// WorkerPID returns the local worker process ID, or zero when unavailable.
+func (r *Repl) WorkerPID() uint32 {
+	if r == nil || r.ptr == nil {
+		return 0
+	}
+	return api.replWorkerPID(r.ptr)
+}
+
 // Close frees the owned progress handle.
 func (p *Progress) Close() {
 	if p == nil || p.ptr == nil {
@@ -379,6 +415,14 @@ func (p *Progress) Close() {
 	}
 	api.progressFree(p.ptr)
 	p.ptr = nil
+}
+
+// WorkerPID returns the local worker process ID, or zero when unavailable.
+func (p *Progress) WorkerPID() uint32 {
+	if p == nil || p.ptr == nil {
+		return 0
+	}
+	return api.progressWorkerPID(p.ptr)
 }
 
 // Close frees the owned error handle.

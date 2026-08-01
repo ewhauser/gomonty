@@ -4,10 +4,11 @@ package ffi
 
 import "embed"
 
-//go:embed lib/linux_amd64_musl/libmonty_go_ffi.so
+//go:embed lib/linux_amd64_musl/libmonty_go_ffi.so lib/linux_amd64_musl/gomonty-worker
 var embeddedLibs embed.FS
 
 const (
 	embeddedLibraryDir      = "lib/linux_amd64_musl"
 	embeddedLibraryFilename = "libmonty_go_ffi.so"
+	embeddedWorkerFilename  = "gomonty-worker"
 )

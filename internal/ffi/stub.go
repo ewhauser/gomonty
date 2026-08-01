@@ -38,7 +38,7 @@ type OpResult struct {
 	ProgressPayload []byte
 	Repl            *Repl
 	Error           *Error
-	Prints          string
+	Prints          []byte
 }
 
 func unavailableError() *Error {
@@ -51,8 +51,14 @@ func (*Runner) Close() {}
 // Close releases the stub REPL handle.
 func (*Repl) Close() {}
 
+// WorkerPID reports that no worker is available on an unsupported target.
+func (*Repl) WorkerPID() uint32 { return 0 }
+
 // Close releases the stub progress handle.
 func (*Progress) Close() {}
+
+// WorkerPID reports that no worker is available on an unsupported target.
+func (*Progress) WorkerPID() uint32 { return 0 }
 
 // Close releases the stub error handle.
 func (*Error) Close() {}

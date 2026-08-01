@@ -2,17 +2,23 @@
 
 ## Upstream Monty Pin
 
-`crates/monty-go-ffi` builds against upstream Monty through the pinned git
-dependencies in the root `Cargo.toml`:
+`crates/monty-go-ffi` and `crates/gomonty-worker` build against upstream Monty
+through the pinned git dependencies in the root `Cargo.toml`:
 
 - `monty`
-- `monty_type_checking`
+- `monty-pool`
+- `monty-proto`
+- `monty-types`
+- `monty-type-checking`
+
+All five dependencies must use the same exact release commit because the FFI
+library and worker negotiate Monty's versioned subprocess protocol.
 
 To bump the upstream dependency:
 
-1. Update the `rev` for both dependencies in `Cargo.toml`.
+1. Update the `rev` for all Monty dependencies in `Cargo.toml`.
 2. Refresh `Cargo.lock` with `cargo update`.
-3. Rebuild the host shared library and run local verification:
+3. Rebuild the host shared library and worker, then run local verification:
 
 ```bash
 MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh aarch64-apple-darwin
@@ -25,7 +31,10 @@ dependency, use a temporary Cargo patch:
 ```toml
 [patch."https://github.com/pydantic/monty.git"]
 monty = { path = "../monty/crates/monty" }
-monty_type_checking = { path = "../monty/crates/monty-type-checking" }
+monty-pool = { path = "../monty/crates/monty-pool" }
+monty-proto = { path = "../monty/crates/monty-proto" }
+monty-types = { path = "../monty/crates/monty-types" }
+monty-type-checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
 ## Release Workflow
@@ -44,7 +53,7 @@ latest semver tag (for example `v0.0.13` -> `v0.0.14`), and dispatches the
 version explicitly, use `make release VERSION=vX.Y.Z`. The workflow:
 
 - validates the requested version and ensures the tag does not already exist
-- rebuilds the tracked shared libraries for:
+- rebuilds the tracked native artifact pairs (shared library plus worker) for:
   - `darwin/arm64`
   - `linux/amd64` (GNU/glibc)
   - `linux/arm64` (GNU/glibc)
@@ -77,7 +86,7 @@ workflow:
   - `go vet ./...`
   - `cd examples && CGO_ENABLED=0 go run ./cmd/example`
 - tags the merged `main` commit
-- creates the GitHub release with attached shared libraries and checksums, and
+- creates the GitHub release with target-specific native bundles and checksums, and
   generates release notes from the exact git range since the previous tag
 - warms the Go module proxy with `go list -m`, which is the trigger `pkg.go.dev`
   and the module mirror need
@@ -89,21 +98,21 @@ through a pull request.
 Current CI coverage:
 
 - native `CGO_ENABLED=0` Go tests on Linux, macOS, and Windows
-- build verification for musl Linux shared libraries
+- build verification for musl Linux shared libraries and workers
 - `go vet ./...`
 - a smoke run of the standalone example module under `examples/`
 
-## Why The Shared Libraries Must Be Committed Before Tagging
+## Why The Native Artifacts Must Be Committed Before Tagging
 
 Go module consumers fetch the tagged source tree. They do not fetch GitHub
 release assets as part of `go get`.
 
-Because the current runtime loader embeds the checked-in shared libraries under
-`internal/ffi/lib/<target>`, the tag itself must already contain the correct
-shared libraries and header. Release assets are optional convenience copies
-only.
+Because the current runtime loader embeds the checked-in shared library and
+worker under `internal/ffi/lib/<target>`, the tag itself must already contain
+both matching binaries and the header. Release assets are optional convenience
+copies only.
 
-## Manual Shared Library Refresh
+## Manual Native Artifact Refresh
 
 If you need to refresh artifacts locally instead of using the workflow, build
 each supported target explicitly on a compatible host:
@@ -122,7 +131,7 @@ Commit the updated files:
 - `Cargo.toml`
 - `Cargo.lock`
 - `internal/ffi/include/monty_go_ffi.h`
-- `internal/ffi/lib/...` shared libraries only
+- `internal/ffi/lib/...` shared libraries and workers only
 - `internal/ffi/checksums.txt`
 
 ## Post-Release Verification
