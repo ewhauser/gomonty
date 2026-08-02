@@ -122,9 +122,22 @@ Enable release immutability in the repository's GitHub settings before the first
 runtime release. The workflow refuses to create a release when the setting is
 disabled.
 
+GitHub requires repository Administration(read) for that live setting endpoint,
+and the per-job `GITHUB_TOKEN` cannot be granted that permission. Create a
+fine-grained token scoped only to this repository with Administration(read) and
+store it as the `IMMUTABLE_RELEASES_READ_TOKEN` secret on the
+`native-runtime-release` environment. Do not grant it Contents(write), do not
+use a classic PAT, and rotate it independently of release publication. The
+workflow exposes it only to the preflight step; release creation continues to
+use the short-lived `GITHUB_TOKEN`.
+
 Also create a `native-runtime-release` GitHub Actions environment, restrict its
-deployment branches to protected `main`, and require a human reviewer. The
-publication job references that environment and also rejects dispatches whose
+deployment branches to protected `main`, and disable administrator bypass. When
+the repository has a distinct release reviewer, require that reviewer and
+prevent self-review. A solo-maintainer repository must not claim a
+separation-of-duties control it does not have; its mandatory read-only
+immutability credential remains the technical pre-publication guard. The
+publication job references the environment and also rejects dispatches whose
 workflow ref is not `main`.
 
 After any release-preparation PR merges, publish from its recorded run:
