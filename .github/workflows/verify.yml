@@ -219,5 +219,6 @@ jobs:
               test "$(go env GOVERSION)" = go1.25.0
               test "$(go env GOHOSTOS)" = linux
               test "$(go env GOHOSTARCH)" = "${{ matrix.go_arch }}"
-              go test -race -count=1 -run "^TestPublishedReleaseEndToEnd$" ./
+              # The Go race detector requires cgo; this portable musl path is intentionally CGO-free.
+              CGO_ENABLED=0 go test -count=1 -run "^TestPublishedReleaseEndToEnd$" ./
             '
