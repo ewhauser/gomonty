@@ -132,9 +132,9 @@ func VerifyReleaseAssets(manifest Manifest, assetRoot string) error {
 	return nil
 }
 
-// VerifyInputFiles checks platform build outputs against committed per-file
-// hashes without creating or executing an archive. It is used by build-only CI
-// targets such as musl.
+// VerifyInputFiles checks whether build outputs reproduce every committed
+// release file byte-for-byte. It is an explicit reproducibility audit, not a
+// requirement for locally built runtimes.
 func VerifyInputFiles(manifest Manifest, inputRoot string) error {
 	for _, target := range manifest.Targets {
 		if err := VerifyInputTarget(manifest, inputRoot, target.ID); err != nil {
@@ -144,42 +144,44 @@ func VerifyInputFiles(manifest Manifest, inputRoot string) error {
 	return nil
 }
 
-// VerifyInputTarget checks one platform build output.
+// VerifyInputTarget performs that exact-byte audit for one target.
 func VerifyInputTarget(manifest Manifest, inputRoot, targetID string) error {
-	var target Target
-	found := false
-	for _, candidate := range manifest.Targets {
-		if candidate.ID == targetID {
-			target = candidate
-			found = true
-			break
-		}
+	actual, err := InspectInputTarget(manifest, inputRoot, targetID)
+	if err != nil {
+		return err
 	}
-	if !found {
-		return fmt.Errorf("runtime manifest has no target %q", targetID)
+	target, err := manifestTarget(manifest, targetID)
+	if err != nil {
+		return err
+	}
+	if !equalFiles(actual, target.Files) {
+		return fmt.Errorf("%w: build output for %s does not match the committed release bytes", ErrIntegrity, targetID)
+	}
+	return nil
+}
+
+// InspectInputTarget validates one local build's exact layout and returns the
+// hashes it actually produced. It deliberately does not claim that an
+// unpinned local toolchain reproduces a committed release byte-for-byte.
+func InspectInputTarget(manifest Manifest, inputRoot, targetID string) ([]File, error) {
+	target, err := manifestTarget(manifest, targetID)
+	if err != nil {
+		return nil, err
 	}
 	directory, ok := sourceDirectories[target.ID]
 	if !ok {
-		return fmt.Errorf("no source directory mapping for target %s", target.ID)
+		return nil, fmt.Errorf("no source directory mapping for target %s", target.ID)
 	}
-	for _, expected := range target.Files {
-		path := filepath.Join(inputRoot, directory, expected.Name)
-		info, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("inspect build output %s: %w", path, err)
-		}
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != expected.Size {
-			return fmt.Errorf("%w: build output %s has unexpected type or size", ErrIntegrity, path)
-		}
-		digest, err := hashFile(path)
-		if err != nil {
-			return err
-		}
-		if digest != expected.SHA256 {
-			return fmt.Errorf("%w: build output %s SHA-256 is %s, expected %s", ErrIntegrity, path, digest, expected.SHA256)
+	return inspectBuiltPayload(filepath.Join(inputRoot, directory), target)
+}
+
+func manifestTarget(manifest Manifest, targetID string) (Target, error) {
+	for _, candidate := range manifest.Targets {
+		if candidate.ID == targetID {
+			return candidate, nil
 		}
 	}
-	return nil
+	return Target{}, fmt.Errorf("runtime manifest has no target %q", targetID)
 }
 
 func writeDeterministicZIP(destination, inputDirectory string, files []File) error {

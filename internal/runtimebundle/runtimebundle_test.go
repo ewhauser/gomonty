@@ -503,6 +503,38 @@ func TestVerifyReleaseAssetsRejectsUnexpectedFiles(t *testing.T) {
 	}
 }
 
+func TestInspectInputTargetRecordsLocalHashesWithoutReleaseEquivalence(t *testing.T) {
+	t.Parallel()
+	fixture := newRuntimeFixture(t)
+	inputRoot := t.TempDir()
+	inputDirectory := filepath.Join(inputRoot, sourceDirectories[fixture.target.ID])
+	if err := os.MkdirAll(inputDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localLibrary := []byte("local-library-output")
+	localWorker := []byte("local-worker-output")
+	writeExecutable(t, filepath.Join(inputDirectory, fixture.target.Files[0].Name), localLibrary)
+	writeExecutable(t, filepath.Join(inputDirectory, fixture.target.Files[1].Name), localWorker)
+
+	files, err := InspectInputTarget(fixture.manifest, inputRoot, fixture.target.ID)
+	if err != nil {
+		t.Fatalf("InspectInputTarget: %v", err)
+	}
+	if files[0].SHA256 != sha256Hex(localLibrary) || files[1].SHA256 != sha256Hex(localWorker) {
+		t.Fatalf("local hashes = %+v", files)
+	}
+	if err := VerifyInputTarget(fixture.manifest, inputRoot, fixture.target.ID); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("VerifyInputTarget error = %v, want ErrIntegrity", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(inputDirectory, "unexpected"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectInputTarget(fixture.manifest, inputRoot, fixture.target.ID); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("unexpected-file error = %v, want ErrIntegrity", err)
+	}
+}
+
 func TestFileLockHonorsCancellation(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "runtime.lock")

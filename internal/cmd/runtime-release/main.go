@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -17,7 +18,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: runtime-release <generate|verify|verify-input> [flags]")
+		return fmt.Errorf("usage: runtime-release <generate|verify|verify-input|inspect-input> [flags]")
 	}
 	switch args[0] {
 	case "generate":
@@ -89,6 +90,30 @@ func run(args []string) error {
 			return runtimebundle.VerifyInputTarget(manifest, *inputRoot, *target)
 		}
 		return runtimebundle.VerifyInputFiles(manifest, *inputRoot)
+	case "inspect-input":
+		flags := flag.NewFlagSet("inspect-input", flag.ContinueOnError)
+		manifestPath := flags.String("manifest", "internal/runtimebundle/manifests/current.json", "manifest path")
+		inputRoot := flags.String("input", "internal/ffi/lib", "native artifact input root")
+		target := flags.String("target", "", "target ID")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *target == "" {
+			return fmt.Errorf("inspect-input requires --target")
+		}
+		manifestBytes, err := os.ReadFile(*manifestPath)
+		if err != nil {
+			return err
+		}
+		manifest, err := runtimebundle.ParseManifest(manifestBytes)
+		if err != nil {
+			return err
+		}
+		files, err := runtimebundle.InspectInputTarget(manifest, *inputRoot, *target)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(files)
 	default:
 		return fmt.Errorf("unknown runtime-release command %q", args[0])
 	}

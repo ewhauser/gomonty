@@ -156,5 +156,5 @@ jobs:
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
             '
 
-      - name: Verify build output hashes
-        run: go run ./internal/cmd/runtime-release verify-input --target "${{ matrix.target_id }}"
+      - name: Record and validate local build hashes
+        run: go run ./internal/cmd/runtime-release inspect-input --target "${{ matrix.target_id }}"
