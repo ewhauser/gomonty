@@ -8,6 +8,8 @@ permissions:
   contents: read
 
 env:
+  MUSL_GO_IMAGE: golang@sha256:c8e1680f8002c64ddfba276a3c1f763097cb182402673143a89dcca4c107cf17
+  MUSL_RUST_IMAGE: rust@sha256:77d036177a4caf204bf23c6c68e1aa013a0d919fd40058eb27943295080fe869
   RUST_TOOLCHAIN: 1.95.0
 
 jobs:
@@ -80,11 +82,12 @@ jobs:
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.13"
 
       - name: Install pinned Rust toolchain
         shell: bash
         run: |
+          test "$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)" = "$RUST_TOOLCHAIN"
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.rust_target }}"
           rustup default "$RUST_TOOLCHAIN"
 
@@ -118,7 +121,7 @@ jobs:
           CGO_ENABLED=0 go run ./cmd/example
 
   musl:
-    name: build-only ${{ matrix.name }}
+    name: native ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -126,35 +129,54 @@ jobs:
         include:
           - name: linux-amd64-musl
             runner: ubuntu-24.04
+            go_arch: amd64
             rust_target: x86_64-unknown-linux-musl
-            target_id: linux-amd64-musl
           - name: linux-arm64-musl
             runner: ubuntu-24.04-arm
+            go_arch: arm64
             rust_target: aarch64-unknown-linux-musl
-            target_id: linux-arm64-musl
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
+      - name: Build musl preparation, test, and example binaries
+        shell: bash
+        run: |
+          mkdir -p .musl-smoke
+          docker run --rm \
+            --platform "linux/${{ matrix.go_arch }}" \
+            -v "$PWD:/work" \
+            -w /work \
+            "$MUSL_GO_IMAGE" \
+            sh -c '
+              set -eux
+              test "$(go env GOVERSION)" = go1.25.0
+              test "$(go env GOHOSTOS)" = linux
+              test "$(go env GOHOSTARCH)" = "${{ matrix.go_arch }}"
+              CGO_ENABLED=0 go build -o .musl-smoke/gomonty ./cmd/gomonty
+              CGO_ENABLED=0 go test -c -o .musl-smoke/gomonty.test ./
+              (cd examples && CGO_ENABLED=0 go build -o ../.musl-smoke/example ./cmd/example)
+            '
 
-      - name: Build native pair in pinned musl image
+      - name: Build, prepare, and execute on musl
         shell: bash
         run: |
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
-            rust@sha256:77d036177a4caf204bf23c6c68e1aa013a0d919fd40058eb27943295080fe869 \
+            "$MUSL_RUST_IMAGE" \
             sh -c '
               set -eux
-              apk add --no-cache bash build-base python3
+              apk add --no-cache bash=5.2.37-r0 build-base=0.5-r3 python3=3.12.13-r0
               PYO3_PYTHON="$(command -v python3)"
               export PYO3_PYTHON
               export MONTY_GO_FFI_MUSL_NATIVE=1
-              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+              export GOMONTY_CACHE_DIR=/work/.musl-cache-${{ matrix.name }}
+              export CARGO_TARGET_DIR=/work/.musl-target-${{ matrix.name }}
+              /work/.musl-smoke/gomonty prepare build --source /work --json | tee /tmp/prepared.json
+              grep -q '"target": "${{ matrix.name }}"' /tmp/prepared.json
+              grep -q '"rust_toolchain": "1.95.0"' /tmp/prepared.json
+              /work/.musl-smoke/gomonty prepare build --source /work --json
+              /work/.musl-smoke/gomonty.test -test.count=1
+              /work/.musl-smoke/example
             '
-
-      - name: Record and validate local build hashes
-        run: go run ./internal/cmd/runtime-release inspect-input --target "${{ matrix.target_id }}"

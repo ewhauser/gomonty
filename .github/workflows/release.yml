@@ -18,6 +18,9 @@ concurrency:
   group: publish-native-runtime
   cancel-in-progress: false
 
+env:
+  MUSL_GO_IMAGE: golang@sha256:c8e1680f8002c64ddfba276a3c1f763097cb182402673143a89dcca4c107cf17
+
 jobs:
   publish:
     if: github.ref == 'refs/heads/main'
@@ -26,6 +29,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PREP_RUN_ID: ${{ inputs.prep_run_id }}
+    outputs:
+      release_tag: ${{ steps.publish_release.outputs.tag }}
+      target_sha: ${{ steps.release_target.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -37,10 +43,12 @@ jobs:
           go-version-file: go.mod
 
       - name: Require protected main
+        id: release_target
         shell: bash
         run: |
           test "$GITHUB_REF" = "refs/heads/main"
           git rev-parse HEAD > release-target-sha.txt
+          printf 'sha=%s\n' "$(cat release-target-sha.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Validate retained build run
         shell: bash
@@ -133,12 +141,14 @@ jobs:
           test "$actual_count" -eq "$expected_count"
 
       - name: Publish immutable release
+        id: publish_release
         shell: bash
         run: |
           tag="$(cat release-tag.txt)"
           gh release edit "$tag" --draft=false --latest=false
           immutable="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .immutable)"
           test "$immutable" = "true"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
 
       - name: Verify public download from a clean cache
         shell: bash
@@ -148,3 +158,74 @@ jobs:
           go run ./cmd/gomonty prepare download --json
           cd examples
           CGO_ENABLED=0 go run ./cmd/example
+
+  verify-public-native:
+    name: public download ${{ matrix.name }}
+    needs: publish
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-24.04
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+          - name: darwin-arm64
+            runner: macos-14
+          - name: windows-amd64
+            runner: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.publish.outputs.target_sha }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download, verify, load, and execute the published target
+        env:
+          GOMONTY_TEST_PUBLIC_RELEASE: "1"
+        run: go test -race -count=1 -run '^TestPublishedReleaseEndToEnd$' ./
+
+  verify-public-musl:
+    name: public download ${{ matrix.name }}
+    needs: publish
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64-musl
+            runner: ubuntu-24.04
+            go_arch: amd64
+          - name: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            go_arch: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.publish.outputs.target_sha }}
+
+      - name: Download, verify, load, and execute the published musl target
+        shell: bash
+        run: |
+          docker run --rm \
+            --platform "linux/${{ matrix.go_arch }}" \
+            -v "$PWD:/work" \
+            -w /work \
+            -e GOMONTY_TEST_PUBLIC_RELEASE=1 \
+            "$MUSL_GO_IMAGE" \
+            sh -c '
+              set -eux
+              test "$(go env GOVERSION)" = go1.25.0
+              test "$(go env GOHOSTOS)" = linux
+              test "$(go env GOHOSTARCH)" = "${{ matrix.go_arch }}"
+              test -s /etc/ssl/certs/ca-certificates.crt
+              CGO_ENABLED=0 go test -count=1 -run "^TestPublishedReleaseEndToEnd$" ./
+            '

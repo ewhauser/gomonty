@@ -20,8 +20,15 @@ git dependencies in `Cargo.toml`:
 
 All five dependencies must use the same exact release commit because the FFI
 library and worker negotiate Monty's versioned subprocess protocol. The Rust
-toolchain is pinned in `rust-toolchain.toml`; musl CI uses a Docker image by
-immutable digest.
+toolchain is pinned in both `rust-toolchain.toml` and the release manifest;
+build preparation rejects a compiler, Cargo version, or target standard library
+that does not match. Release builders pin Python 3.12.13. Musl CI additionally
+uses separate Go 1.25.0 and Rust 1.95.0 Alpine images by immutable multi-platform
+digest and pins every explicitly installed Alpine build package; missing pinned
+packages fail the build instead of silently selecting newer tools. The Go
+consumer is compiled inside Alpine because the pure-Go FFI loader still links
+to the host libc: an Ubuntu cross-build is a glibc executable even when
+`CGO_ENABLED=0`, and therefore is not a valid musl proof.
 
 When changing Monty or either native crate:
 
@@ -63,6 +70,8 @@ It then:
 - calculates the size and SHA-256 of both files inside every archive
 - calculates a deterministic digest of every reviewed native build input
 - verifies the archives through the production extractor and verifier
+- loads and executes every generated archive on its destination OS, architecture,
+  and libc, including both musl targets
 - proves no native executable is tracked in Git
 - runs source-only Go race tests, vet, and `git diff --check`
 - creates provenance attestations for the exact ZIPs and manifest
@@ -147,8 +156,27 @@ differs from the host PID. Download preparation must request the exact tagged
 asset URL in the committed manifest and fail before `Dlopen` or worker startup
 when any archive, file, receipt, target, or version check differs.
 
+The publication workflow repeats that clean-cache public-download, hash, load,
+distinct-worker, and evaluation proof on all six supported targets after the
+immutable release becomes visible. A successful publish job without all six
+public verification jobs is not a completed runtime release.
+
 `prepare build` is a separate trust choice. It verifies the reviewed source
-digest before executing the build, then records and rechecks the local outputs.
-It trusts the user's local compiler, Python, linker, and SDK and does not require
-local bytes to reproduce hosted builder output byte-for-byte. Standard
-`CARGO_TARGET_DIR` is respected for an explicitly managed compilation cache.
+digest and manifest-pinned Rust/Cargo version and target before executing the
+build, then records and rechecks the local outputs. It still trusts the user's
+Python, linker, and SDK and does not require local bytes to reproduce hosted
+builder output byte-for-byte. Standard `CARGO_TARGET_DIR` is respected for an
+explicitly managed compilation cache.
+
+## 4. Tag the Go Module
+
+Create the next Go module tag only after the immutable runtime release and all
+six public-download jobs are green. The module tag must point at the same
+protected-main commit used by the runtime publication workflow, and its
+committed manifest must name that immutable runtime release. Never tag a module
+whose default download path has not been proven from a clean cache.
+
+Finally, fetch the tagged module from a fresh module cache, confirm its ZIP has
+no native executable, install `cmd/gomonty` at that exact tag, and repeat the
+download plus distinct-worker `40 + 2` consumer proof. Source and runtime tags
+are never moved or reused; failures are fixed forward with new versions.
