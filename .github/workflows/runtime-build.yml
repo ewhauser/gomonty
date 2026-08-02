@@ -12,6 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  GNU_GLIBC_FLOOR: "2.35"
   MUSL_GO_IMAGE: golang@sha256:c8e1680f8002c64ddfba276a3c1f763097cb182402673143a89dcca4c107cf17
   MUSL_RUST_IMAGE: rust@sha256:77d036177a4caf204bf23c6c68e1aa013a0d919fd40058eb27943295080fe869
   NATIVE_PYTHON: 3.12.10
@@ -26,12 +27,12 @@ jobs:
       matrix:
         include:
           - name: linux-amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             rust_target: x86_64-unknown-linux-gnu
             directory: linux_amd64
             refresh_header: true
           - name: linux-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             rust_target: aarch64-unknown-linux-gnu
             directory: linux_arm64
             refresh_header: false
@@ -74,6 +75,32 @@ jobs:
             export MONTY_GO_FFI_SKIP_HEADER=1
           fi
           scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+
+      - name: Enforce GNU ABI floor
+        if: startsWith(matrix.name, 'linux-')
+        shell: bash
+        run: |
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc $GNU_GLIBC_FLOOR"
+          python - "$GNU_GLIBC_FLOOR" internal/ffi/lib/${{ matrix.directory }}/* <<'PY'
+          import re
+          import subprocess
+          import sys
+
+          floor = tuple(map(int, sys.argv[1].split(".")))
+          for path in sys.argv[2:]:
+              output = subprocess.check_output(["readelf", "--version-info", path], text=True)
+              versions = {
+                  tuple(map(int, match.split(".")))
+                  for match in re.findall(r"GLIBC_([0-9]+(?:\.[0-9]+)+)", output)
+              }
+              highest = max(versions, default=(0,))
+              print(f"{path}: highest required GLIBC is {'.'.join(map(str, highest))}")
+              if highest > floor:
+                  raise SystemExit(
+                      f"{path} requires GLIBC {'.'.join(map(str, highest))}, "
+                      f"above the declared {sys.argv[1]} floor"
+                  )
+          PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -239,9 +266,9 @@ jobs:
       matrix:
         include:
           - name: linux-amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
           - name: linux-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
           - name: darwin-arm64
             runner: macos-14
           - name: windows-amd64
@@ -257,6 +284,11 @@ jobs:
         with:
           name: runtime-release-package
           path: .release-package
+
+      - name: Verify GNU runtime floor
+        if: startsWith(matrix.name, 'linux-')
+        shell: bash
+        run: test "$(getconf GNU_LIBC_VERSION)" = "glibc $GNU_GLIBC_FLOOR"
 
       - name: Exercise the exact target archive and worker
         shell: bash

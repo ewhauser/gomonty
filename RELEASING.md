@@ -32,6 +32,13 @@ consumer is compiled inside Alpine because the pure-Go FFI loader still links
 to the host libc: an Ubuntu cross-build is a glibc executable even when
 `CGO_ENABLED=0`, and therefore is not a valid musl proof.
 
+GNU release pairs are built and executed on Ubuntu 22.04 for both amd64 and
+arm64. The declared compatibility floor is glibc 2.35. Release builds inspect
+the imported GLIBC symbol versions in both files and fail if either requires a
+newer version; the smoke and public-download jobs then execute those exact
+files on glibc 2.35 runners. Lower glibc floors require a separately reviewed
+builder contract rather than merely renaming an Ubuntu 24.04 artifact.
+
 When changing Monty or either native crate:
 
 1. Update all five Cargo revisions together and refresh `Cargo.lock`.

@@ -8,6 +8,7 @@ permissions:
   contents: read
 
 env:
+  GNU_GLIBC_FLOOR: "2.35"
   MUSL_GO_IMAGE: golang@sha256:c8e1680f8002c64ddfba276a3c1f763097cb182402673143a89dcca4c107cf17
   MUSL_RUST_IMAGE: rust@sha256:77d036177a4caf204bf23c6c68e1aa013a0d919fd40058eb27943295080fe869
   NATIVE_PYTHON: 3.12.10
@@ -60,10 +61,10 @@ jobs:
       matrix:
         include:
           - name: linux-amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             rust_target: x86_64-unknown-linux-gnu
           - name: linux-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             rust_target: aarch64-unknown-linux-gnu
           - name: darwin-arm64
             runner: macos-14
@@ -85,6 +86,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.NATIVE_PYTHON }}
+
+      - name: Verify GNU runtime floor
+        if: startsWith(matrix.name, 'linux-')
+        shell: bash
+        run: test "$(getconf GNU_LIBC_VERSION)" = "glibc $GNU_GLIBC_FLOOR"
 
       - name: Install pinned Rust toolchain
         shell: bash

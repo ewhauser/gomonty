@@ -19,6 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  GNU_GLIBC_FLOOR: "2.35"
   MUSL_GO_IMAGE: golang@sha256:c8e1680f8002c64ddfba276a3c1f763097cb182402673143a89dcca4c107cf17
 
 jobs:
@@ -170,9 +171,9 @@ jobs:
       matrix:
         include:
           - name: linux-amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
           - name: linux-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
           - name: darwin-arm64
             runner: macos-14
           - name: windows-amd64
@@ -185,6 +186,11 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+
+      - name: Verify GNU runtime floor
+        if: startsWith(matrix.name, 'linux-')
+        shell: bash
+        run: test "$(getconf GNU_LIBC_VERSION)" = "glibc $GNU_GLIBC_FLOOR"
 
       - name: Download, verify, load, and execute the published target
         env:

@@ -81,6 +81,12 @@ and target standard library, then records the locally built files' hashes. This
 mode deliberately trusts the caller's local Python, linker, and SDK; local
 builds are not required to reproduce CI output byte-for-byte.
 
+Published GNU/Linux downloads require glibc 2.35 or newer. They are built and
+executed on both amd64 and arm64 Ubuntu 22.04 runners, and release assembly
+rejects either native file when its imported GLIBC symbol version exceeds that
+declared floor. Musl downloads do not use glibc. Users on an older GNU system
+can choose `prepare build` to compile against their host instead.
+
 Both modes use a cross-process lock and atomic staging. Before every `Dlopen` or
 worker initialization, the loader rechecks the receipt and hashes of both files.
 Missing, changed, extra, symlinked, or mismatched files fail closed with
