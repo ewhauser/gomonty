@@ -28,6 +28,9 @@ var (
 	ErrIntegrity = errors.New("gomonty native runtime integrity check failed")
 	// ErrUnsupported means there is no runtime manifest for the current target.
 	ErrUnsupported = errors.New("gomonty native runtime target is unsupported")
+	// ErrBuildPrerequisite means local build preparation cannot prove that the
+	// reviewed compiler and target are available.
+	ErrBuildPrerequisite = errors.New("gomonty native runtime build prerequisite is not satisfied")
 )
 
 //go:embed manifests/current.json
@@ -45,6 +48,7 @@ type Manifest struct {
 	ReleaseBaseURL string   `json:"release_base_url"`
 	MontyVersion   string   `json:"monty_version"`
 	MontyCommit    string   `json:"monty_commit"`
+	RustToolchain  string   `json:"rust_toolchain"`
 	SourceSHA256   string   `json:"native_source_sha256"`
 	Targets        []Target `json:"targets"`
 
@@ -130,6 +134,9 @@ func (m Manifest) Validate() error {
 	if !safeVersion(m.MontyVersion) || !validHex(m.MontyCommit, 40) {
 		return errors.New("runtime manifest has an invalid Monty version or commit")
 	}
+	if !stableToolchainVersion(m.RustToolchain) {
+		return errors.New("runtime manifest has an invalid Rust toolchain version")
+	}
 	if !validHex(m.SourceSHA256, sha256.Size*2) {
 		return errors.New("runtime manifest has an invalid native source SHA-256")
 	}
@@ -191,9 +198,15 @@ func validateFiles(target Target) error {
 	return nil
 }
 
-// CurrentTarget returns the manifest entry selected by Go build constraints.
+// CurrentTarget returns the manifest entry selected for the current process.
+// Linux libc is detected from the running system so callers cannot silently
+// prepare a GNU runtime on musl, or the reverse, because of a missing build tag.
 func (m Manifest) CurrentTarget() (Target, error) {
-	return m.TargetFor(runtime.GOOS, runtime.GOARCH, runtimeVariant)
+	variant, err := currentRuntimeVariant()
+	if err != nil {
+		return Target{}, err
+	}
+	return m.TargetFor(runtime.GOOS, runtime.GOARCH, variant)
 }
 
 // TargetFor resolves an exact platform tuple.
@@ -254,4 +267,22 @@ func safeToken(value string) bool {
 
 func safeVersion(value string) bool {
 	return strings.HasPrefix(value, "v") && safeToken(value)
+}
+
+func stableToolchainVersion(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return false
+		}
+		for _, char := range part {
+			if char < '0' || char > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }

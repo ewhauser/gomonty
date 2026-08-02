@@ -20,7 +20,8 @@ Documentation: https://pkg.go.dev/github.com/ewhauser/gomonty
 - Native executables are not stored in Git or in Go module ZIPs
 - Reviewable release hashes: `internal/runtimebundle/manifests/current.json`
 - Generated header: checked into `internal/ffi/include/monty_go_ffi.h`
-- Alpine/musl builds use a separate `musl` Go build tag and musl-specific shared libraries
+- Linux GNU/glibc versus musl is detected from the running system before an
+  asset is selected; ambiguous systems fail closed instead of guessing
 
 Installing the Go module does not execute or fetch native code. Before first
 use, the application owner explicitly chooses either a verified GitHub release
@@ -75,9 +76,10 @@ prepared, err := monty.Prepare(ctx, monty.PrepareOptions{
 `prepare download` requires HTTPS and verifies the archive SHA-256 before
 extracting it. It then verifies the size and SHA-256 of both the library and
 worker. `prepare build` verifies the complete native source digest before
-running the build script, then records the locally built files' hashes. This
-mode deliberately trusts the caller's local Rust, Python, linker, and SDK
-toolchain; local builds are not required to reproduce CI output byte-for-byte.
+running the build script, enforces the manifest-pinned Rust and Cargo versions
+and target standard library, then records the locally built files' hashes. This
+mode deliberately trusts the caller's local Python, linker, and SDK; local
+builds are not required to reproduce CI output byte-for-byte.
 
 Both modes use a cross-process lock and atomic staging. Before every `Dlopen` or
 worker initialization, the loader rechecks the receipt and hashes of both files.
@@ -91,15 +93,18 @@ signing and does not defend against a privileged local attacker able to modify
 the application process or cache during use. Monty's subprocess boundary is
 also not an OS sandbox.
 
-Build preparation additionally requires the pinned Rust 1.95.0 toolchain and
-Python on `PATH` (or `PYO3_PYTHON`). Default Linux builds use GNU/glibc. Alpine
-and other musl consumers build and run with the `musl` Go tag. The standard
-`CARGO_TARGET_DIR` environment variable is respected when callers want to reuse
-or isolate Cargo's compilation cache:
+Build preparation additionally requires Rust and Cargo 1.95.0, the manifest's
+Rust target, and Python on `PATH` (or `PYO3_PYTHON`). `PrepareBuild` overrides a
+caller-supplied `RUSTUP_TOOLCHAIN`, verifies the actual compiler versions, and
+fails with the exact `rustup target add` command when the target standard
+library is absent. Linux chooses GNU/glibc or musl by inspecting the running
+system's ELF interpreter; users do not need a special Go build tag. The
+standard `CARGO_TARGET_DIR` environment variable is respected when callers want
+to reuse or isolate Cargo's compilation cache:
 
 ```bash
 gomonty prepare build
-go test -tags musl ./...
+go test ./...
 ```
 
 ## Consumer Example

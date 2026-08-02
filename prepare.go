@@ -33,6 +33,9 @@ var (
 	ErrRuntimeIntegrity = runtimebundle.ErrIntegrity
 	// ErrRuntimeUnsupported means the current platform has no runtime asset.
 	ErrRuntimeUnsupported = runtimebundle.ErrUnsupported
+	// ErrRuntimeBuildPrerequisite means PrepareBuild could not prove that the
+	// manifest-pinned Rust compiler and target are available locally.
+	ErrRuntimeBuildPrerequisite = runtimebundle.ErrBuildPrerequisite
 )
 
 // PrepareOptions configures an explicit native-runtime preparation. Normal
@@ -59,6 +62,7 @@ type PreparedRuntime struct {
 	RuntimeVersion string      `json:"runtime_version"`
 	Target         string      `json:"target"`
 	Mode           PrepareMode `json:"mode"`
+	RustToolchain  string      `json:"rust_toolchain"`
 }
 
 // Prepare explicitly acquires, verifies, and atomically caches the current
@@ -91,6 +95,7 @@ func preparedRuntime(result runtimebundle.Result) PreparedRuntime {
 		RuntimeVersion: result.RuntimeVersion,
 		Target:         result.Target,
 		Mode:           PrepareMode(result.Origin),
+		RustToolchain:  result.RustToolchain,
 	}
 }
 

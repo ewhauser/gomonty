@@ -42,6 +42,9 @@ func buildRuntime(ctx context.Context, sourceDir string, manifest Manifest, targ
 	if sourceDigest != manifest.SourceSHA256 {
 		return fmt.Errorf("%w: native source SHA-256 is %s, expected %s; refusing to run the build", ErrIntegrity, sourceDigest, manifest.SourceSHA256)
 	}
+	if err := verifyBuildToolchain(ctx, sourceDir, manifest, target); err != nil {
+		return err
+	}
 
 	targetDirectory := os.Getenv("CARGO_TARGET_DIR")
 	if targetDirectory == "" {
@@ -62,7 +65,7 @@ func buildRuntime(ctx context.Context, sourceDir string, manifest Manifest, targ
 	}
 	command := exec.CommandContext(ctx, "bash", filepath.Join(sourceDir, "scripts", "build-go-ffi.sh"), target.RustTarget)
 	command.Dir = sourceDir
-	command.Env = append(command.Environ(),
+	command.Env = append(pinnedRustEnvironment(manifest.RustToolchain),
 		"MONTY_GO_FFI_SKIP_HEADER=1",
 		"GOMONTY_NATIVE_OUTPUT_DIR="+payload,
 		"CARGO_TARGET_DIR="+targetDirectory,
@@ -79,10 +82,125 @@ func buildRuntime(ctx context.Context, sourceDir string, manifest Manifest, targ
 	return nil
 }
 
+func verifyBuildToolchain(ctx context.Context, sourceDir string, manifest Manifest, target Target) error {
+	pinned, err := readPinnedRustToolchain(sourceDir)
+	if err != nil {
+		return err
+	}
+	if pinned != manifest.RustToolchain {
+		return fmt.Errorf("%w: rust-toolchain.toml pins %s, manifest requires %s", ErrIntegrity, pinned, manifest.RustToolchain)
+	}
+	environment := pinnedRustEnvironment(manifest.RustToolchain)
+	rustc, err := buildCommandOutput(ctx, sourceDir, environment, "rustc", "--version", "--verbose")
+	if err != nil {
+		return err
+	}
+	release := versionField(rustc, "release")
+	if release != manifest.RustToolchain {
+		return fmt.Errorf("%w: rustc release is %q, expected %q", ErrBuildPrerequisite, release, manifest.RustToolchain)
+	}
+	cargo, err := buildCommandOutput(ctx, sourceDir, environment, "cargo", "--version")
+	if err != nil {
+		return err
+	}
+	fields := strings.Fields(cargo)
+	if len(fields) < 2 || fields[0] != "cargo" || fields[1] != manifest.RustToolchain {
+		return fmt.Errorf("%w: cargo version is %q, expected %q", ErrBuildPrerequisite, strings.TrimSpace(cargo), manifest.RustToolchain)
+	}
+	targetLibDir, err := buildCommandOutput(ctx, sourceDir, environment, "rustc", "--print", "target-libdir", "--target", target.RustTarget)
+	if err != nil {
+		return fmt.Errorf("%w; install it with `rustup target add --toolchain %s %s`", err, manifest.RustToolchain, target.RustTarget)
+	}
+	entries, err := os.ReadDir(strings.TrimSpace(targetLibDir))
+	if err != nil {
+		return fmt.Errorf("%w: Rust target %s is not installed for toolchain %s; run `rustup target add --toolchain %s %s`", ErrBuildPrerequisite, target.RustTarget, manifest.RustToolchain, manifest.RustToolchain, target.RustTarget)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "libstd-") && strings.HasSuffix(entry.Name(), ".rlib") {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: Rust target %s has no standard library for toolchain %s; run `rustup target add --toolchain %s %s`", ErrBuildPrerequisite, target.RustTarget, manifest.RustToolchain, manifest.RustToolchain, target.RustTarget)
+}
+
+func readPinnedRustToolchain(sourceDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(sourceDir, "rust-toolchain.toml"))
+	if err != nil {
+		return "", fmt.Errorf("%w: read rust-toolchain.toml: %v", ErrIntegrity, err)
+	}
+	var channel string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "channel") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "channel" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+			return "", fmt.Errorf("%w: rust-toolchain.toml channel must be a quoted stable version", ErrIntegrity)
+		}
+		if channel != "" {
+			return "", fmt.Errorf("%w: rust-toolchain.toml contains duplicate channel entries", ErrIntegrity)
+		}
+		channel = value[1 : len(value)-1]
+	}
+	if !stableToolchainVersion(channel) {
+		return "", fmt.Errorf("%w: rust-toolchain.toml has invalid stable channel %q", ErrIntegrity, channel)
+	}
+	return channel, nil
+}
+
+func pinnedRustEnvironment(version string) []string {
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, value := range os.Environ() {
+		key, _, _ := strings.Cut(value, "=")
+		if strings.EqualFold(key, "RUSTUP_TOOLCHAIN") {
+			continue
+		}
+		environment = append(environment, value)
+	}
+	return append(environment, "RUSTUP_TOOLCHAIN="+version)
+}
+
+func buildCommandOutput(ctx context.Context, sourceDir string, environment []string, name string, args ...string) (string, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	command.Dir = sourceDir
+	command.Env = environment
+	var output limitedBuffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("%w: run %s: %v\n%s", ErrBuildPrerequisite, name, err, output.String())
+	}
+	return strings.TrimSpace(output.String()), nil
+}
+
+func versionField(output, key string) string {
+	prefix := key + ":"
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
 // ComputeNativeSourceDigest hashes every reviewed input executed or compiled by
 // PrepareBuild. Generated target directories and native outputs are excluded.
 func ComputeNativeSourceDigest(sourceDir string) (string, error) {
-	paths := []string{"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", filepath.Join("scripts", "build-go-ffi.sh")}
+	paths := []string{
+		"Cargo.toml",
+		"Cargo.lock",
+		"rust-toolchain.toml",
+		filepath.Join("scripts", "build-go-ffi.sh"),
+		filepath.Join("scripts", "musl-linker.sh"),
+	}
 	for _, directory := range []string{filepath.Join("crates", "monty-go-ffi"), filepath.Join("crates", "gomonty-worker")} {
 		err := filepath.WalkDir(filepath.Join(sourceDir, directory), func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {

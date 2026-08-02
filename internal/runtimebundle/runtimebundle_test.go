@@ -39,9 +39,87 @@ func TestCurrentManifestIsValidAndComplete(t *testing.T) {
 	if len(manifest.Targets) != 6 {
 		t.Fatalf("target count = %d, want 6", len(manifest.Targets))
 	}
+	if manifest.RustToolchain != "1.95.0" {
+		t.Fatalf("Rust toolchain = %q, want 1.95.0", manifest.RustToolchain)
+	}
 	for _, target := range manifest.Targets {
 		if strings.Trim(target.ArchiveSHA256, "0") == "" || target.ArchiveSize <= 1 {
 			t.Fatalf("target %s has placeholder archive metadata", target.ID)
+		}
+	}
+}
+
+func TestCurrentManifestTargetMatrix(t *testing.T) {
+	t.Parallel()
+	manifest, err := CurrentManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"darwin/arm64/":    "aarch64-apple-darwin",
+		"linux/amd64/":     "x86_64-unknown-linux-gnu",
+		"linux/amd64/musl": "x86_64-unknown-linux-musl",
+		"linux/arm64/":     "aarch64-unknown-linux-gnu",
+		"linux/arm64/musl": "aarch64-unknown-linux-musl",
+		"windows/amd64/":   "x86_64-pc-windows-msvc",
+	}
+	got := make(map[string]string, len(manifest.Targets))
+	for _, target := range manifest.Targets {
+		got[target.GOOS+"/"+target.GOARCH+"/"+target.Variant] = target.RustTarget
+	}
+	if len(got) != len(want) {
+		t.Fatalf("target matrix = %v, want %v", got, want)
+	}
+	for key, rustTarget := range want {
+		if got[key] != rustTarget {
+			t.Errorf("target %s = %q, want %q", key, got[key], rustTarget)
+		}
+	}
+}
+
+func TestPinnedRustToolchainMatchesManifest(t *testing.T) {
+	t.Parallel()
+	manifest, err := CurrentManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := packageSourceRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := readPinnedRustToolchain(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned != manifest.RustToolchain {
+		t.Fatalf("rust-toolchain.toml = %q, manifest = %q", pinned, manifest.RustToolchain)
+	}
+}
+
+func TestPinnedRustEnvironmentOverridesCaller(t *testing.T) {
+	t.Setenv("RUSTUP_TOOLCHAIN", "nightly")
+	t.Setenv("Rustup_Toolchain", "beta")
+	environment := pinnedRustEnvironment("1.95.0")
+	var values []string
+	for _, value := range environment {
+		if strings.HasPrefix(value, "RUSTUP_TOOLCHAIN=") {
+			values = append(values, value)
+		}
+	}
+	if len(values) != 1 || values[0] != "RUSTUP_TOOLCHAIN=1.95.0" {
+		t.Fatalf("RUSTUP_TOOLCHAIN entries = %v", values)
+	}
+}
+
+func TestRustVersionParsing(t *testing.T) {
+	t.Parallel()
+	output := "rustc 1.95.0 (59807616e 2026-04-14)\nrelease: 1.95.0\nhost: aarch64-apple-darwin\n"
+	if got := versionField(output, "release"); got != "1.95.0" {
+		t.Fatalf("release = %q, want 1.95.0", got)
+	}
+	for _, value := range []string{"1.95", "stable", "01.95.0", "1.95.0-beta.1", "v1.95.0", ""} {
+		if stableToolchainVersion(value) {
+			t.Fatalf("stableToolchainVersion(%q) = true", value)
 		}
 	}
 }
@@ -62,6 +140,44 @@ func TestCurrentManifestMatchesReviewedNativeSource(t *testing.T) {
 	}
 	if digest != manifest.SourceSHA256 {
 		t.Fatalf("native source SHA-256 = %s, manifest = %s", digest, manifest.SourceSHA256)
+	}
+}
+
+func TestNativeSourceDigestIncludesMuslLinker(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	inputs := map[string]string{
+		"Cargo.toml":          "[workspace]\n",
+		"Cargo.lock":          "# lock\n",
+		"rust-toolchain.toml": "[toolchain]\nchannel = \"1.95.0\"\n",
+		filepath.Join("scripts", "build-go-ffi.sh"):          "#!/bin/sh\n",
+		filepath.Join("scripts", "musl-linker.sh"):           "#!/bin/sh\nexec cc \"$@\"\n",
+		filepath.Join("crates", "monty-go-ffi", "lib.rs"):    "pub fn ffi() {}\n",
+		filepath.Join("crates", "gomonty-worker", "main.rs"): "fn main() {}\n",
+	}
+	for path, contents := range inputs {
+		fullPath := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := ComputeNativeSourceDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linker := filepath.Join(root, "scripts", "musl-linker.sh")
+	if err := os.WriteFile(linker, []byte("#!/bin/sh\nexit 99\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after, err := ComputeNativeSourceDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("native source digest did not change with the executed musl linker")
 	}
 }
 
@@ -331,6 +447,9 @@ func TestPrepareBuildRecordsAndRechecksLocalOutput(t *testing.T) {
 	if first.Directory != second.Directory || first.Origin != string(ModeBuild) || builds.Load() != 1 {
 		t.Fatalf("first=%+v second=%+v builds=%d", first, second, builds.Load())
 	}
+	if first.RustToolchain != fixture.manifest.RustToolchain {
+		t.Fatalf("Rust toolchain = %q, want %q", first.RustToolchain, fixture.manifest.RustToolchain)
+	}
 
 	badCache := t.TempDir()
 	bad := fixture.preparer(Options{Mode: ModeBuild, CacheRoot: badCache})
@@ -351,6 +470,33 @@ func TestPrepareBuildRecordsAndRechecksLocalOutput(t *testing.T) {
 	}
 	if _, err := verifyInstalled(locallyBuilt.Directory, fixture.manifest, fixture.target); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("tampered local build error = %v, want ErrIntegrity", err)
+	}
+}
+
+func TestPreparedReceiptRejectsRustToolchainMismatch(t *testing.T) {
+	t.Parallel()
+	fixture := newRuntimeFixture(t)
+	p := fixture.preparer(Options{Mode: ModeBuild, CacheRoot: t.TempDir()})
+	p.build = func(_ context.Context, _ string, _ Manifest, _ Target, payload string) error {
+		writeExecutable(t, filepath.Join(payload, fixture.target.Files[0].Name), fixture.libraryData)
+		writeExecutable(t, filepath.Join(payload, fixture.target.Files[1].Name), fixture.workerData)
+		return nil
+	}
+	result, err := p.prepare(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(result.Directory, receiptName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"rust_toolchain": "1.95.0"`), []byte(`"rust_toolchain": "1.94.0"`), 1)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyInstalled(result.Directory, fixture.manifest, fixture.target); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("verifyInstalled error = %v, want ErrIntegrity", err)
 	}
 }
 
@@ -586,6 +732,7 @@ func newRuntimeFixture(t *testing.T) runtimeFixture {
 		ReleaseBaseURL: "https://example.test/releases/runtime-test-v1",
 		MontyVersion:   "v0.0.19",
 		MontyCommit:    "e347739909877f4fb03877e23dd092286fc7e659",
+		RustToolchain:  "1.95.0",
 		SourceSHA256:   "1111111111111111111111111111111111111111111111111111111111111111",
 		Targets:        []Target{target},
 	}

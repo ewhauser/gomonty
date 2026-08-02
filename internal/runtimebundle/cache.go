@@ -22,6 +22,7 @@ type receipt struct {
 	Target         string `json:"target"`
 	ManifestSHA256 string `json:"manifest_sha256"`
 	SourceSHA256   string `json:"native_source_sha256"`
+	RustToolchain  string `json:"rust_toolchain"`
 	Origin         string `json:"origin"`
 	InstalledAt    string `json:"installed_at"`
 	Files          []File `json:"files"`
@@ -33,6 +34,7 @@ type Result struct {
 	RuntimeVersion string `json:"runtime_version"`
 	Target         string `json:"target"`
 	Origin         string `json:"origin"`
+	RustToolchain  string `json:"rust_toolchain"`
 	Directory      string `json:"directory"`
 	LibraryPath    string `json:"library_path"`
 	WorkerPath     string `json:"worker_path"`
@@ -115,6 +117,7 @@ func verifyInstalled(directory string, manifest Manifest, target Target) (Result
 	if installed.Schema != manifestSchema || installed.RuntimeVersion != manifest.RuntimeVersion ||
 		installed.Target != target.ID || installed.ManifestSHA256 != manifest.Digest() ||
 		installed.SourceSHA256 != manifest.SourceSHA256 ||
+		installed.RustToolchain != manifest.RustToolchain ||
 		(installed.Origin != string(ModeDownload) && installed.Origin != string(ModeBuild)) {
 		return Result{}, fmt.Errorf("%w: runtime receipt does not match the embedded manifest", ErrIntegrity)
 	}
@@ -149,6 +152,7 @@ func verifyInstalled(directory string, manifest Manifest, target Target) (Result
 		RuntimeVersion: manifest.RuntimeVersion,
 		Target:         target.ID,
 		Origin:         installed.Origin,
+		RustToolchain:  installed.RustToolchain,
 		Directory:      directory,
 		LibraryPath:    filepath.Join(directory, library.Name),
 		WorkerPath:     filepath.Join(directory, worker.Name),
@@ -301,6 +305,7 @@ func writeReceipt(directory string, manifest Manifest, target Target, mode Mode,
 		Target:         target.ID,
 		ManifestSHA256: manifest.Digest(),
 		SourceSHA256:   manifest.SourceSHA256,
+		RustToolchain:  manifest.RustToolchain,
 		Origin:         string(mode),
 		InstalledAt:    now.UTC().Format(time.RFC3339Nano),
 		Files:          append([]File(nil), files...),

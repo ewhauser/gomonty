@@ -72,7 +72,29 @@ func TestPreparedReleaseAssetEndToEnd(t *testing.T) {
 	if preparedAgain != prepared || requests.Load() != 1 {
 		t.Fatalf("second prepared=%+v requests=%d", preparedAgain, requests.Load())
 	}
+	assertPreparedWorker(t)
+}
 
+func TestPublishedReleaseEndToEnd(t *testing.T) {
+	if os.Getenv("GOMONTY_TEST_PUBLIC_RELEASE") == "" {
+		t.Skip("set GOMONTY_TEST_PUBLIC_RELEASE=1 after publishing the immutable runtime release")
+	}
+	t.Setenv("GOMONTY_CACHE_DIR", t.TempDir())
+	if _, err := New("40 + 2", CompileOptions{}); !errors.Is(err, ErrRuntimeNotPrepared) {
+		t.Fatalf("New before preparation error = %v, want ErrRuntimeNotPrepared", err)
+	}
+	prepared, err := Prepare(context.Background(), PrepareOptions{Mode: PrepareDownload})
+	if err != nil {
+		t.Fatalf("PrepareDownload public release: %v", err)
+	}
+	if prepared.Mode != PrepareDownload || prepared.RustToolchain != "1.95.0" {
+		t.Fatalf("prepared public runtime = %+v", prepared)
+	}
+	assertPreparedWorker(t)
+}
+
+func assertPreparedWorker(t *testing.T) {
+	t.Helper()
 	repl, err := NewRepl(ReplOptions{ScriptName: "release-asset.py"})
 	if err != nil {
 		t.Fatalf("NewRepl: %v", err)

@@ -20,10 +20,10 @@ sandbox.
 The code is wired for these targets:
 
 - `darwin/arm64`
-- `linux/amd64` with GNU/glibc shared libraries by default
-- `linux/arm64` with GNU/glibc shared libraries by default
-- `linux/amd64` with musl shared libraries when built with `-tags musl`
-- `linux/arm64` with musl shared libraries when built with `-tags musl`
+- `linux/amd64` with GNU/glibc or musl shared libraries selected from the
+  running system's ELF interpreter
+- `linux/arm64` with GNU/glibc or musl shared libraries selected from the
+  running system's ELF interpreter
 - `windows/amd64`
 
 Native executables are not stored in Git or the Go module. Before using runner
@@ -35,7 +35,9 @@ spawning.
 
 - Go 1.25+
 - an explicitly prepared native runtime for your target
-- `-tags musl` when building on Alpine or another musl-based Linux environment
+
+Linux libc selection is automatic and fails closed when the host is ambiguous.
+No musl-specific Go build tag is required.
 
 The bindings are cgo-free; consumers do not need a C toolchain, and builds work
 with either value of `CGO_ENABLED`.
