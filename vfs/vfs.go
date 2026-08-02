@@ -35,11 +35,27 @@ type FileSystem interface {
 	Absolute(path string) (string, error)
 }
 
+// AppendFileSystem optionally provides efficient append operations. Handler
+// falls back to read-plus-write when a FileSystem does not implement it.
+type AppendFileSystem interface {
+	AppendText(path string, data string) (int, error)
+	AppendBytes(path string, data []byte) (int, error)
+}
+
 // Environment is the typed environment-variable surface expected by the bindings.
 type Environment interface {
 	Get(key string) (string, bool)
 	All() map[string]string
 }
+
+// Clock supplies host time for date.today() and datetime.now().
+type Clock interface {
+	Now() time.Time
+}
+
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
 
 // MapEnvironment is a simple map-backed Environment.
 type MapEnvironment map[string]string
@@ -61,8 +77,17 @@ func (e MapEnvironment) All() map[string]string {
 
 // Handler converts a FileSystem and Environment into a Monty OS handler.
 func Handler(fileSystem FileSystem, environment Environment) monty.OSHandler {
+	return HandlerWithClock(fileSystem, environment, systemClock{})
+}
+
+// HandlerWithClock converts abstract filesystem, environment, and clock
+// capabilities into a Monty OS handler.
+func HandlerWithClock(fileSystem FileSystem, environment Environment, clock Clock) monty.OSHandler {
+	if clock == nil {
+		clock = systemClock{}
+	}
 	return func(_ context.Context, call monty.OSCall) (monty.Result, error) {
-		if strings.HasPrefix(string(call.Function), "Path.") && fileSystem == nil {
+		if (strings.HasPrefix(string(call.Function), "Path.") || call.Function == monty.OSOpen) && fileSystem == nil {
 			message := "path operation called but no file system handler was provided"
 			return monty.Raise(monty.Exception{Type: "NotImplementedError", Arg: &message}), nil
 		}
@@ -141,6 +166,20 @@ func Handler(fileSystem FileSystem, environment Environment) monty.OSHandler {
 				return monty.Raise(mapError(err)), nil
 			}
 			return monty.Return(monty.Int(int64(written))), nil
+		case monty.OSPathAppendText:
+			pathValue, err := pathArg(call.Args, 0)
+			if err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			text, err := stringArg(call.Args, 1)
+			if err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			written, err := appendText(fileSystem, pathValue, text)
+			if err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			return monty.Return(monty.Int(int64(written))), nil
 		case monty.OSPathWriteBytes:
 			pathValue, err := pathArg(call.Args, 0)
 			if err != nil {
@@ -155,6 +194,35 @@ func Handler(fileSystem FileSystem, environment Environment) monty.OSHandler {
 				return monty.Raise(mapError(err)), nil
 			}
 			return monty.Return(monty.Int(int64(written))), nil
+		case monty.OSPathAppendBytes:
+			pathValue, err := pathArg(call.Args, 0)
+			if err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			data, err := bytesArg(call.Args, 1)
+			if err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			written, err := appendBytes(fileSystem, pathValue, data)
+			if err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			return monty.Return(monty.Int(int64(written))), nil
+		case monty.OSOpen:
+			pathValue, err := pathArg(call.Args, 0)
+			if err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			mode, err := stringArg(call.Args, 1)
+			if err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			if err := prepareOpen(fileSystem, pathValue, mode); err != nil {
+				return monty.Raise(mapError(err)), nil
+			}
+			return monty.Return(monty.FileHandleValue(monty.FileHandle{
+				Path: monty.Path(pathValue), Mode: mode,
+			})), nil
 		case monty.OSPathMkdir:
 			pathValue, err := pathArg(call.Args, 0)
 			if err != nil {
@@ -279,6 +347,33 @@ func Handler(fileSystem FileSystem, environment Environment) monty.OSHandler {
 				}
 			}
 			return monty.Return(monty.DictValue(items)), nil
+		case monty.OSDateToday:
+			now := clock.Now()
+			year, month, day := now.Date()
+			return monty.Return(monty.DateValue(monty.Date{
+				Year: int32(year), Month: uint8(month), Day: uint8(day),
+			})), nil
+		case monty.OSDateTimeNow:
+			now := clock.Now()
+			var offsetSeconds *int32
+			var timezoneName *string
+			if len(call.Args) > 0 && call.Args[0].Kind() != "none" {
+				tz, ok := call.Args[0].TimeZone()
+				if !ok {
+					message := "datetime.now timezone argument must be timezone or None"
+					return monty.Raise(monty.Exception{Type: "TypeError", Arg: &message}), nil
+				}
+				now = now.UTC().Add(time.Duration(tz.OffsetSeconds) * time.Second)
+				offset := tz.OffsetSeconds
+				offsetSeconds = &offset
+				timezoneName = tz.Name
+			}
+			return monty.Return(monty.DateTimeValue(monty.DateTime{
+				Year: int32(now.Year()), Month: uint8(now.Month()), Day: uint8(now.Day()),
+				Hour: uint8(now.Hour()), Minute: uint8(now.Minute()), Second: uint8(now.Second()),
+				Microsecond: uint32(now.Nanosecond() / 1_000), OffsetSeconds: offsetSeconds,
+				TimezoneName: timezoneName,
+			})), nil
 		default:
 			message := "unsupported OS function"
 			return monty.Raise(monty.Exception{Type: "NotImplementedError", Arg: &message}), nil
@@ -424,6 +519,16 @@ func (fs *MemoryFS) WriteText(pathValue string, data string) (int, error) {
 // WriteBytes writes a binary file.
 func (fs *MemoryFS) WriteBytes(pathValue string, data []byte) (int, error) {
 	return fs.writeFile(pathValue, data)
+}
+
+// AppendText appends UTF-8 text to a file, creating it when absent.
+func (fs *MemoryFS) AppendText(pathValue string, data string) (int, error) {
+	return fs.appendFile(pathValue, []byte(data))
+}
+
+// AppendBytes appends bytes to a file, creating it when absent.
+func (fs *MemoryFS) AppendBytes(pathValue string, data []byte) (int, error) {
+	return fs.appendFile(pathValue, data)
 }
 
 // Mkdir creates a directory.
@@ -681,6 +786,95 @@ func (fs *MemoryFS) writeFile(pathValue string, data []byte) (int, error) {
 		stat: FileStat(int64(len(data)), 0o644, time.Now()),
 	}
 	return len(data), nil
+}
+
+func (fs *MemoryFS) appendFile(pathValue string, data []byte) (int, error) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	normalized := normalizePath(pathValue)
+	parent := path.Dir(normalized)
+	parentEntry := fs.entries[parent]
+	if parentEntry == nil {
+		return 0, &stdfs.PathError{Op: "append", Path: pathValue, Err: stdfs.ErrNotExist}
+	}
+	if parentEntry.kind != entryKindDirectory {
+		return 0, &stdfs.PathError{Op: "append", Path: parent, Err: syscall.ENOTDIR}
+	}
+
+	existing := fs.entries[normalized]
+	if existing != nil && existing.kind == entryKindDirectory {
+		return 0, &stdfs.PathError{Op: "append", Path: pathValue, Err: syscall.EISDIR}
+	}
+	if existing == nil {
+		existing = &entry{kind: entryKindFile}
+		fs.entries[normalized] = existing
+	}
+	existing.data = append(existing.data, data...)
+	existing.stat = FileStat(int64(len(existing.data)), 0o644, time.Now())
+	return len(data), nil
+}
+
+func appendText(fileSystem FileSystem, pathValue string, data string) (int, error) {
+	if appender, ok := fileSystem.(AppendFileSystem); ok {
+		return appender.AppendText(pathValue, data)
+	}
+	existing, err := fileSystem.ReadText(pathValue)
+	if err != nil && !errors.Is(err, stdfs.ErrNotExist) {
+		return 0, err
+	}
+	if _, err := fileSystem.WriteText(pathValue, existing+data); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+func appendBytes(fileSystem FileSystem, pathValue string, data []byte) (int, error) {
+	if appender, ok := fileSystem.(AppendFileSystem); ok {
+		return appender.AppendBytes(pathValue, data)
+	}
+	existing, err := fileSystem.ReadBytes(pathValue)
+	if err != nil && !errors.Is(err, stdfs.ErrNotExist) {
+		return 0, err
+	}
+	combined := make([]byte, 0, len(existing)+len(data))
+	combined = append(combined, existing...)
+	combined = append(combined, data...)
+	written, err := fileSystem.WriteBytes(pathValue, combined)
+	if err != nil {
+		return 0, err
+	}
+	_ = written
+	return len(data), nil
+}
+
+func prepareOpen(fileSystem FileSystem, pathValue string, mode string) error {
+	switch mode {
+	case "r", "rb", "r+", "rb+":
+		exists, err := fileSystem.Exists(pathValue)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return &stdfs.PathError{Op: "open", Path: pathValue, Err: stdfs.ErrNotExist}
+		}
+		return nil
+	case "w", "wb", "w+", "wb+":
+		_, err := fileSystem.WriteBytes(pathValue, nil)
+		return err
+	case "a", "ab", "a+", "ab+":
+		exists, err := fileSystem.Exists(pathValue)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+		_, err = fileSystem.WriteBytes(pathValue, nil)
+		return err
+	default:
+		return errors.New("unsupported open mode")
+	}
 }
 
 func (fs *MemoryFS) requireFile(pathValue string) (*entry, error) {

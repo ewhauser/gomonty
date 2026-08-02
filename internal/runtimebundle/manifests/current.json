@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "runtime_version": "monty-v0.0.19-1",
+  "release_tag": "runtime-monty-v0.0.19-1",
+  "release_base_url": "https://github.com/ewhauser/gomonty/releases/download/runtime-monty-v0.0.19-1",
+  "monty_version": "v0.0.19",
+  "monty_commit": "e347739909877f4fb03877e23dd092286fc7e659",
+  "rust_toolchain": "1.95.0",
+  "native_source_sha256": "6d362508448d4e430bd31b9b37e18aae0a60dd36fba4c9e76fe29eb96f600fd0",
+  "targets": [
+    {
+      "id": "darwin-arm64",
+      "goos": "darwin",
+      "goarch": "arm64",
+      "rust_target": "aarch64-apple-darwin",
+      "asset": "gomonty-runtime-monty-v0.0.19-1-darwin-arm64.zip",
+      "archive_sha256": "091bf01ee6217fb857841ed12ab8e3bdfe54bbf913ace351d9b9da9ba0e15185",
+      "archive_size": 15806212,
+      "files": [
+        {
+          "role": "library",
+          "name": "libmonty_go_ffi.dylib",
+          "sha256": "b8b425c47279e4768c7915e46c4348b5ac36a1adbb5f80ab8c34a9e93570537f",
+          "size": 17307728,
+          "executable": true
+        },
+        {
+          "role": "worker",
+          "name": "gomonty-worker",
+          "sha256": "12be8b180ea2e2ce0cecd80b470898ec0982141ca73dd714bf34900d123b7f19",
+          "size": 16281264,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "id": "linux-amd64",
+      "goos": "linux",
+      "goarch": "amd64",
+      "rust_target": "x86_64-unknown-linux-gnu",
+      "asset": "gomonty-runtime-monty-v0.0.19-1-linux-amd64.zip",
+      "archive_sha256": "93e4d4b2673f0a6a9908b1bb894bd651ca0376bb43c275222e3e3e64cdb11bfe",
+      "archive_size": 17296015,
+      "files": [
+        {
+          "role": "library",
+          "name": "libmonty_go_ffi.so",
+          "sha256": "a8600723a543dd982b992c536c9174748b52a7eb1832b6420bcea5c05ef39768",
+          "size": 20630344,
+          "executable": true
+        },
+        {
+          "role": "worker",
+          "name": "gomonty-worker",
+          "sha256": "fafbd2985f1b2b0a86c4afee0a45a3536535c4ebc26f5c4a492f0dc391f8fa4b",
+          "size": 18855056,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "id": "linux-amd64-musl",
+      "goos": "linux",
+      "goarch": "amd64",
+      "variant": "musl",
+      "rust_target": "x86_64-unknown-linux-musl",
+      "asset": "gomonty-runtime-monty-v0.0.19-1-linux-amd64-musl.zip",
+      "archive_sha256": "6dd662370e34f17ab7131ef286e5bcf7d7a19c3f049fe131342adb7fdc0845de",
+      "archive_size": 17222220,
+      "files": [
+        {
+          "role": "library",
+          "name": "libmonty_go_ffi.so",
+          "sha256": "36063a4e1455e50727bed2eda368197ea98913658835483899acdfba6a5895f4",
+          "size": 20732272,
+          "executable": true
+        },
+        {
+          "role": "worker",
+          "name": "gomonty-worker",
+          "sha256": "13437c0d7461d10a2fb7912469dd9a632923d0375c8bc59036308bad9b402cce",
+          "size": 18897400,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "id": "linux-arm64",
+      "goos": "linux",
+      "goarch": "arm64",
+      "rust_target": "aarch64-unknown-linux-gnu",
+      "asset": "gomonty-runtime-monty-v0.0.19-1-linux-arm64.zip",
+      "archive_sha256": "8980cfdcd141ac7d45f0fc34d58f096ab15051751677fad322e88f9ef3ffa5e3",
+      "archive_size": 16265691,
+      "files": [
+        {
+          "role": "library",
+          "name": "libmonty_go_ffi.so",
+          "sha256": "0699c8c28d0ae00726cecb5f3dfefc84bf1727477022af2afa623ef18eb0c1ce",
+          "size": 17770520,
+          "executable": true
+        },
+        {
+          "role": "worker",
+          "name": "gomonty-worker",
+          "sha256": "f77d51b66c008cdbf35657ccd1bfe5f558e8ea276ca8d8898e3a4e29d2cb9213",
+          "size": 16787744,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "id": "linux-arm64-musl",
+      "goos": "linux",
+      "goarch": "arm64",
+      "variant": "musl",
+      "rust_target": "aarch64-unknown-linux-musl",
+      "asset": "gomonty-runtime-monty-v0.0.19-1-linux-arm64-musl.zip",
+      "archive_sha256": "65f297d9e2e5b3ba8835d6e275e20c9de61184d57e65128b8504fbbf148fe10a",
+      "archive_size": 16340299,
+      "files": [
+        {
+          "role": "library",
+          "name": "libmonty_go_ffi.so",
+          "sha256": "0426aebc8e1cd1bfb4dbdc69c33ac2eb2834911d667b39db6c9d069adaeaae70",
+          "size": 17836096,
+          "executable": true
+        },
+        {
+          "role": "worker",
+          "name": "gomonty-worker",
+          "sha256": "123039a99a5d9b23da437a8cbc1fd9a2791bf3331648fb96ad37692365576e1b",
+          "size": 16853256,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "id": "windows-amd64",
+      "goos": "windows",
+      "goarch": "amd64",
+      "rust_target": "x86_64-pc-windows-msvc",
+      "asset": "gomonty-runtime-monty-v0.0.19-1-windows-amd64.zip",
+      "archive_sha256": "e4ec7923af262f3916179eaf33b4e166bf7de5c1729b7802e6b8445b5b60bbd5",
+      "archive_size": 17236219,
+      "files": [
+        {
+          "role": "library",
+          "name": "monty_go_ffi.dll",
+          "sha256": "0909a4640b14063ca9f2681be2b30ed9d1bc2690367720d10b5aded6a7a88daa",
+          "size": 21192704,
+          "executable": false
+        },
+        {
+          "role": "worker",
+          "name": "gomonty-worker.exe",
+          "sha256": "4d95040f60de8b9c64b7ee45adc9166efd3b99cdf7ea750f085a4391e27915f5",
+          "size": 20815872,
+          "executable": true
+        }
+      ]
+    }
+  ]
+}

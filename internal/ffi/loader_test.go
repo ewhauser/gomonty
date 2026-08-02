@@ -3,88 +3,54 @@
 package ffi
 
 import (
-	"os"
-	"path/filepath"
+	"errors"
 	"testing"
-	"testing/fstest"
+
+	"github.com/ewhauser/gomonty/internal/runtimebundle"
 )
 
-func TestExtractEmbeddedLibraryWritesAndReusesCache(t *testing.T) {
+func TestLocateFailurePreventsNativeLibraryLoad(t *testing.T) {
 	t.Parallel()
-
-	cacheRoot := t.TempDir()
-	libraryName := "libmonty_go_ffi.test"
-	source := fstest.MapFS{
-		"lib/test/" + libraryName: &fstest.MapFile{Data: []byte("native-library")},
+	want := errors.New("verification failed")
+	loaded := false
+	_, _, err := locateAndLoadRuntime(
+		func() (runtimebundle.Result, error) { return runtimebundle.Result{}, want },
+		func(string) (uintptr, error) {
+			loaded = true
+			return 0, nil
+		},
+	)
+	if !errors.Is(err, want) {
+		t.Fatalf("locateAndLoadRuntime error = %v, want %v", err, want)
 	}
-
-	firstPath, err := extractEmbeddedLibrary(source, "lib/test", libraryName, cacheRoot)
-	if err != nil {
-		t.Fatalf("extractEmbeddedLibrary(first): %v", err)
-	}
-	firstBytes, err := os.ReadFile(firstPath)
-	if err != nil {
-		t.Fatalf("ReadFile(first): %v", err)
-	}
-	if got := string(firstBytes); got != "native-library" {
-		t.Fatalf("unexpected first extraction contents: got %q", got)
-	}
-
-	secondPath, err := extractEmbeddedLibrary(source, "lib/test", libraryName, cacheRoot)
-	if err != nil {
-		t.Fatalf("extractEmbeddedLibrary(second): %v", err)
-	}
-	if firstPath != secondPath {
-		t.Fatalf("expected cache reuse path %q, got %q", firstPath, secondPath)
+	if loaded {
+		t.Fatal("native library loader ran before runtime verification succeeded")
 	}
 }
 
-func TestExtractEmbeddedLibraryRewritesHashMismatch(t *testing.T) {
+func TestVerifiedPathsArePassedToNativeLibraryLoad(t *testing.T) {
 	t.Parallel()
-
-	cacheRoot := t.TempDir()
-	libraryName := "libmonty_go_ffi.test"
-	source := fstest.MapFS{
-		"lib/test/" + libraryName: &fstest.MapFile{Data: []byte("expected-bytes")},
-	}
-
-	cachedPath, err := extractEmbeddedLibrary(source, "lib/test", libraryName, cacheRoot)
+	want := runtimebundle.Result{LibraryPath: "/verified/library", WorkerPath: "/verified/worker"}
+	var loadedPath string
+	got, handle, err := locateAndLoadRuntime(
+		func() (runtimebundle.Result, error) { return want, nil },
+		func(path string) (uintptr, error) {
+			loadedPath = path
+			return 42, nil
+		},
+	)
 	if err != nil {
-		t.Fatalf("extractEmbeddedLibrary(initial): %v", err)
+		t.Fatalf("locateAndLoadRuntime: %v", err)
 	}
-	if err := os.WriteFile(cachedPath, []byte("corrupt"), 0o644); err != nil {
-		t.Fatalf("WriteFile(corrupt cache): %v", err)
-	}
-
-	rewrittenPath, err := extractEmbeddedLibrary(source, "lib/test", libraryName, cacheRoot)
-	if err != nil {
-		t.Fatalf("extractEmbeddedLibrary(rewrite): %v", err)
-	}
-	if cachedPath != rewrittenPath {
-		t.Fatalf("expected rewritten cache path %q, got %q", cachedPath, rewrittenPath)
-	}
-	rewrittenBytes, err := os.ReadFile(rewrittenPath)
-	if err != nil {
-		t.Fatalf("ReadFile(rewritten): %v", err)
-	}
-	if got := string(rewrittenBytes); got != "expected-bytes" {
-		t.Fatalf("unexpected rewritten contents: got %q", got)
+	if got != want || handle != 42 || loadedPath != want.LibraryPath {
+		t.Fatalf("got result=%+v handle=%d loaded=%q", got, handle, loadedPath)
 	}
 }
 
-func TestExtractEmbeddedLibraryMissingLibrary(t *testing.T) {
+func TestUnavailableErrorPreservesIntegrityCause(t *testing.T) {
 	t.Parallel()
-
-	_, err := extractEmbeddedLibrary(fstest.MapFS{}, "lib/test", "missing.bin", t.TempDir())
-	if err == nil {
-		t.Fatal("expected missing embedded library error")
-	}
-}
-
-func TestLibraryCacheRootHonorsOverride(t *testing.T) {
-	override := filepath.Join(t.TempDir(), "ffi-cache")
-	t.Setenv("GOMONTY_FFI_CACHE_DIR", override)
-	if got := libraryCacheRoot(); got != override {
-		t.Fatalf("libraryCacheRoot() = %q, want %q", got, override)
+	err := unavailableError(runtimebundle.ErrIntegrity)
+	if !errors.Is(err.Cause(), runtimebundle.ErrIntegrity) {
+		t.Fatalf("Cause() = %v, want ErrIntegrity", err.Cause())
 	}
 }

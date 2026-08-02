@@ -5,9 +5,16 @@
 //! summaries remain JSON because they are not performance-sensitive and are
 //! exposed for formatting/debugging.
 
+// Serde's `skip_serializing_if` callbacks receive fields by reference, even
+// for small Copy scalars.
+#![allow(clippy::trivially_copy_pass_by_ref)]
+
 use std::{collections::BTreeMap, time::Duration};
 
-use monty::{ExcType, MontyDate, MontyDateTime, MontyException, MontyObject, MontyTimeDelta, MontyTimeZone, ResourceLimits, StackFrame};
+use monty_types::{
+    ExcType, FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
+    MontyTimeDelta, MontyTimeZone, MontyType, ResourceLimits, StackFrame,
+};
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +45,9 @@ pub const WIRE_VALUE_DATE: u8 = 20;
 pub const WIRE_VALUE_DATETIME: u8 = 21;
 pub const WIRE_VALUE_TIMEDELTA: u8 = 22;
 pub const WIRE_VALUE_TIMEZONE: u8 = 23;
+pub const WIRE_VALUE_TYPE: u8 = 24;
+pub const WIRE_VALUE_BUILTIN_FUNCTION: u8 = 25;
+pub const WIRE_VALUE_FILE_HANDLE: u8 = 26;
 
 pub const WIRE_CALL_RESULT_RETURN: u8 = 0;
 pub const WIRE_CALL_RESULT_EXCEPTION: u8 = 1;
@@ -50,6 +60,9 @@ pub const WIRE_PROGRESS_FUNCTION_CALL: u8 = 0;
 pub const WIRE_PROGRESS_NAME_LOOKUP: u8 = 1;
 pub const WIRE_PROGRESS_FUTURE: u8 = 2;
 pub const WIRE_PROGRESS_COMPLETE: u8 = 3;
+
+pub const WIRE_PRINT_STDOUT: u8 = 0;
+pub const WIRE_PRINT_STDERR: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WirePair {
@@ -73,7 +86,7 @@ pub struct WireValue {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bytes: Vec<u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub items: Vec<WireValue>,
+    pub items: Vec<Self>,
     #[serde(
         default,
         skip_serializing_if = "String::is_empty",
@@ -83,7 +96,7 @@ pub struct WireValue {
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "field_names")]
     pub field_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub values: Vec<WireValue>,
+    pub values: Vec<Self>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pairs: Vec<WirePair>,
     #[serde(default, skip_serializing_if = "String::is_empty", rename = "exc_type")]
@@ -102,6 +115,18 @@ pub struct WireValue {
     pub docstring: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub placeholder: String,
+    #[serde(default, skip_serializing_if = "is_zero_u64", rename = "cycle_id")]
+    pub cycle_id: u64,
+    #[serde(default, skip_serializing_if = "is_false", rename = "instance_type")]
+    pub instance_type: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "String::is_empty",
+        rename = "file_mode"
+    )]
+    pub file_mode: String,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub position: u64,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub year: i32,
     #[serde(default, skip_serializing_if = "is_zero_u8")]
@@ -255,8 +280,9 @@ impl WireValue {
                 string_value: value.clone(),
                 ..Self::default()
             },
-            MontyObject::Cycle(_, placeholder) => Self {
+            MontyObject::Cycle(identity, placeholder) => Self {
                 kind: WIRE_VALUE_CYCLE,
+                cycle_id: *identity as u64,
                 placeholder: placeholder.clone(),
                 ..Self::default()
             },
@@ -294,13 +320,21 @@ impl WireValue {
                 ..Self::default()
             },
             MontyObject::Type(value) => Self {
-                kind: WIRE_VALUE_REPR,
-                string_value: format!("<class '{value}'>"),
+                kind: WIRE_VALUE_TYPE,
+                type_name: value.name().to_owned(),
+                instance_type: matches!(value, MontyType::Instance(_)),
                 ..Self::default()
             },
             MontyObject::BuiltinFunction(value) => Self {
-                kind: WIRE_VALUE_REPR,
-                string_value: format!("<built-in function {value}>"),
+                kind: WIRE_VALUE_BUILTIN_FUNCTION,
+                name: value.to_string(),
+                ..Self::default()
+            },
+            MontyObject::FileHandle(value) => Self {
+                kind: WIRE_VALUE_FILE_HANDLE,
+                string_value: value.path.clone(),
+                file_mode: value.mode.as_str().to_owned(),
+                position: value.position,
                 ..Self::default()
             },
         }
@@ -410,6 +444,24 @@ impl WireValue {
                 offset_seconds: self.days,
                 name: self.timezone_name,
             })),
+            WIRE_VALUE_TYPE => {
+                if self.instance_type {
+                    return Err("sandbox instance types cannot be used as Monty inputs".to_owned());
+                }
+                MontyType::from_type_name(&self.type_name)
+                    .map(MontyObject::Type)
+                    .ok_or_else(|| format!("unknown Monty type: {}", self.type_name))
+            }
+            WIRE_VALUE_BUILTIN_FUNCTION => MontyObject::builtin_function_from_name(&self.name)
+                .ok_or_else(|| format!("unknown builtin function: {}", self.name)),
+            WIRE_VALUE_FILE_HANDLE => Ok(MontyObject::FileHandle(MontyFileHandle {
+                path: self.string_value,
+                mode: self
+                    .file_mode
+                    .parse::<FileMode>()
+                    .map_err(|error| format!("invalid file mode: {error}"))?,
+                position: self.position,
+            })),
             other => Err(format!("unknown wire value kind: {other}")),
         }
     }
@@ -427,6 +479,8 @@ pub struct WireCompileOptions {
     pub type_check: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_check_stubs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assert_message_annotations: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -447,8 +501,11 @@ pub struct WireResourceLimits {
 
 impl From<WireResourceLimits> for ResourceLimits {
     fn from(value: WireResourceLimits) -> Self {
-        let mut limits = ResourceLimits::new();
-        limits.max_allocations = value.max_allocations;
+        let mut limits = Self::new();
+        // Monty v0.0.19 removed allocation-count limits. Keep decoding the
+        // legacy field so older Go callers remain wire-compatible, but do not
+        // pretend it is enforced.
+        let _ = value.max_allocations;
         limits.max_duration = value.max_duration_secs.map(Duration::from_secs_f64);
         limits.max_memory = value.max_memory;
         limits.gc_interval = value.gc_interval;
@@ -475,6 +532,12 @@ pub struct WireReplOptions {
     pub script_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<WireResourceLimits>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub type_check: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_check_stubs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assert_message_annotations: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -483,6 +546,14 @@ pub struct WireFeedOptions {
     pub version: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, WireValue>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skip_type_check: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WirePrint {
+    pub stream: u8,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -555,12 +626,12 @@ impl From<&StackFrame> for WireFrame {
     fn from(value: &StackFrame) -> Self {
         Self {
             filename: value.filename.clone(),
-            line: u32::from(value.start.line),
-            column: u32::from(value.start.column),
-            end_line: u32::from(value.end.line),
-            end_column: u32::from(value.end.column),
+            line: value.start.line,
+            column: value.start.column,
+            end_line: value.end.line,
+            end_column: value.end.column,
             function_name: value.frame_name.clone(),
-            source_line: value.preview_line.clone(),
+            source_line: value.preview_line.as_deref().map(ToOwned::to_owned),
         }
     }
 }
@@ -631,8 +702,14 @@ const fn is_zero_u8(value: &u8) -> bool {
 mod tests {
     use num_bigint::BigInt;
 
-    use super::WireValue;
-    use monty::{ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+    use super::{
+        WIRE_VALUE_BUILTIN_FUNCTION, WIRE_VALUE_CYCLE, WIRE_VALUE_FILE_HANDLE, WIRE_VALUE_TYPE,
+        WireValue,
+    };
+    use monty_types::{
+        BuiltinsFunctions, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle,
+        MontyObject, MontyTimeDelta, MontyTimeZone, MontyType,
+    };
 
     #[test]
     fn wire_value_round_trips_nested_dicts() {
@@ -799,5 +876,33 @@ mod tests {
             .into_monty()
             .expect("utc timezone should round-trip");
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_preserves_latest_monty_boundary_variants() {
+        let instance =
+            WireValue::from_monty(&MontyObject::Type(MontyType::Instance("Widget".to_owned())));
+        assert_eq!(instance.kind, WIRE_VALUE_TYPE);
+        assert_eq!(instance.type_name, "Widget");
+        assert!(instance.instance_type);
+
+        let builtin = MontyObject::BuiltinFunction(BuiltinsFunctions::Len);
+        let builtin_wire = WireValue::from_monty(&builtin);
+        assert_eq!(builtin_wire.kind, WIRE_VALUE_BUILTIN_FUNCTION);
+        assert_eq!(builtin_wire.into_monty().unwrap(), builtin);
+
+        let file = MontyObject::FileHandle(MontyFileHandle {
+            path: "/virtual/data.txt".to_owned(),
+            mode: FileMode::Read(false),
+            position: 17,
+        });
+        let file_wire = WireValue::from_monty(&file);
+        assert_eq!(file_wire.kind, WIRE_VALUE_FILE_HANDLE);
+        assert_eq!(file_wire.into_monty().unwrap(), file);
+
+        let cycle = WireValue::from_monty(&MontyObject::Cycle(42, "[...]".to_owned()));
+        assert_eq!(cycle.kind, WIRE_VALUE_CYCLE);
+        assert_eq!(cycle.cycle_id, 42);
+        assert_eq!(cycle.placeholder, "[...]");
     }
 }

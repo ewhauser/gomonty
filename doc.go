@@ -1,10 +1,10 @@
-// Package monty exposes cgo-free Go bindings for the Monty sandboxed Python
-// interpreter.
+// Package monty exposes cgo-free Go bindings for the Monty Python interpreter.
 //
 // The package provides compiled runner and REPL APIs, typed value conversion,
-// host callback dispatch, and low-level pause/resume snapshots. It embeds the
-// platform-specific shared library needed by the bindings and loads it with
-// purego, so normal Go module consumers do not need a local C toolchain.
+// host callback dispatch, and low-level pause/resume snapshots. Native code is
+// prepared explicitly with Prepare or the gomonty command, verified before
+// every load, and then loaded with purego. Normal execution never downloads or
+// builds code automatically.
 //
 // For Go-owned filesystem and environment callbacks, use the companion vfs
 // package.

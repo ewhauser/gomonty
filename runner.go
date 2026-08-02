@@ -84,6 +84,45 @@ type progressBase struct {
 	isRepl     bool
 }
 
+// Close releases the native runner handle. It is safe to call more than once.
+func (r *Runner) Close() error {
+	if r == nil || r.state == nil {
+		return nil
+	}
+	if !r.state.mu.TryLock() {
+		return ErrConcurrentUse
+	}
+	handle := r.state.handle
+	r.state.handle = nil
+	r.state.mu.Unlock()
+	if handle != nil {
+		handle.Close()
+	}
+	return nil
+}
+
+// Close releases an idle REPL session and returns its worker to the internal
+// pool. A REPL with an in-flight feed must be abandoned through its snapshot.
+func (r *Repl) Close() error {
+	if r == nil || r.state == nil {
+		return nil
+	}
+	if !r.state.mu.TryLock() {
+		return ErrConcurrentUse
+	}
+	if r.state.inFlight {
+		r.state.mu.Unlock()
+		return ErrConcurrentUse
+	}
+	handle := r.state.handle
+	r.state.handle = nil
+	r.state.mu.Unlock()
+	if handle != nil {
+		handle.Close()
+	}
+	return nil
+}
+
 // New compiles Monty code into a reusable runner.
 func New(code string, opts CompileOptions) (*Runner, error) {
 	payload, err := marshalWire(newWireCompileOptions(opts))
@@ -120,31 +159,17 @@ func LoadSnapshot(data []byte) (Progress, error) {
 	return progressFromResult(result.Progress, result.ProgressPayload, nil)
 }
 
-// LoadReplSnapshot restores a serialized REPL snapshot and also returns a base
-// REPL handle that can be used to abandon the in-flight snippet.
+// LoadReplSnapshot restores a serialized REPL snapshot and also returns its
+// owning REPL. The REPL remains single-flight until the snapshot completes or
+// is abandoned.
 func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
-	owner := &Repl{state: &replState{}}
-
-	primary := ffi.LoadProgress(data)
-	if primary.Error != nil {
-		return nil, nil, newError(primary.Error)
+	owner := &Repl{state: &replState{inFlight: true}}
+	result := ffi.LoadProgress(data)
+	if result.Error != nil {
+		return nil, nil, newError(result.Error)
 	}
 
-	backup := ffi.LoadProgress(data)
-	if backup.Error != nil {
-		primary.Progress.Close()
-		return nil, nil, newError(backup.Error)
-	}
-
-	replResult := backup.Progress.TakeRepl()
-	backup.Progress.Close()
-	if replResult.Error != nil {
-		primary.Progress.Close()
-		return nil, nil, newError(replResult.Error)
-	}
-	owner.state.restore(replResult.Repl)
-
-	progress, err := progressFromResult(primary.Progress, primary.ProgressPayload, owner.state)
+	progress, err := progressFromResult(result.Progress, result.ProgressPayload, owner.state)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -159,6 +184,17 @@ func NewRepl(opts ReplOptions) (*Repl, error) {
 	}
 
 	result := ffi.NewRepl(payload)
+	if result.Error != nil {
+		return nil, newError(result.Error)
+	}
+	return &Repl{
+		state: &replState{handle: result.Repl},
+	}, nil
+}
+
+// LoadRepl restores an idle REPL session previously serialized by Repl.Dump.
+func LoadRepl(data []byte) (*Repl, error) {
+	result := ffi.LoadRepl(data)
 	if result.Error != nil {
 		return nil, newError(result.Error)
 	}
@@ -256,6 +292,20 @@ func (r *Repl) Dump() ([]byte, error) {
 	return data, nil
 }
 
+// WorkerPID returns the current local Monty worker process ID. It is intended
+// for diagnostics and crash-isolation tests; callers must not treat it as a
+// stable session identifier.
+func (r *Repl) WorkerPID() (int, bool) {
+	handle, release, err := r.state.borrow()
+	if err != nil {
+		return 0, false
+	}
+	defer release()
+
+	pid := handle.WorkerPID()
+	return int(pid), pid != 0
+}
+
 // FeedStart begins low-level REPL snippet execution.
 func (r *Repl) FeedStart(ctx context.Context, code string, opts FeedStartOptions) (Progress, error) {
 	return r.feedStart(ctx, code, opts, nil)
@@ -272,6 +322,7 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 
 	wireOptions, err := newWireFeedOptions(opts)
 	if err != nil {
+		r.state.restore(handle)
 		return nil, err
 	}
 
@@ -292,7 +343,10 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 
 // FeedRun executes a REPL snippet through the high-level host callback loop.
 func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Value, error) {
-	progress, err := r.feedStart(ctx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print)
+	progress, err := r.feedStart(ctx, code, FeedStartOptions{
+		Inputs:        opts.Inputs,
+		SkipTypeCheck: opts.SkipTypeCheck,
+	}, opts.Print)
 	if err != nil {
 		return Value{}, err
 	}
@@ -383,6 +437,24 @@ func (s *FutureSnapshot) PendingCallIDs() []uint32 {
 	return append([]uint32(nil), s.pendingCallIDs...)
 }
 
+// WorkerPID returns the local worker process ID currently owning this paused
+// execution. The value is diagnostic and may change after restore/recovery.
+func (s *Snapshot) WorkerPID() (int, bool) {
+	return s.progressBase.workerPID()
+}
+
+// WorkerPID returns the local worker process ID currently owning this paused
+// execution. The value is diagnostic and may change after restore/recovery.
+func (s *NameLookupSnapshot) WorkerPID() (int, bool) {
+	return s.progressBase.workerPID()
+}
+
+// WorkerPID returns the local worker process ID currently owning this paused
+// execution. The value is diagnostic and may change after restore/recovery.
+func (s *FutureSnapshot) WorkerPID() (int, bool) {
+	return s.progressBase.workerPID()
+}
+
 // ResumeResults resumes a future snapshot with zero or more resolved call IDs.
 func (s *FutureSnapshot) ResumeResults(ctx context.Context, results map[uint32]Result) (Progress, error) {
 	wireResults, err := newWireFutureResults(results)
@@ -426,6 +498,17 @@ func (b *progressBase) dump() ([]byte, error) {
 		return nil, newError(ffiErr)
 	}
 	return bytes, nil
+}
+
+func (b *progressBase) workerPID() (int, bool) {
+	handle, release, err := b.state.borrow()
+	if err != nil {
+		return 0, false
+	}
+	defer release()
+
+	pid := handle.WorkerPID()
+	return int(pid), pid != 0
 }
 
 func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print PrintCallback) (Progress, error) {
@@ -589,8 +672,29 @@ func (s *progressState) take() (*ffi.Progress, *replState, error) {
 }
 
 func consumeOpResult(result ffi.OpResult, owner *replState, print PrintCallback) (Progress, error) {
-	if print != nil && result.Prints != "" {
-		print("stdout", result.Prints)
+	if len(result.Prints) > 0 {
+		var prints []wirePrint
+		if err := unmarshalWire(result.Prints, &prints); err != nil {
+			if result.Progress != nil {
+				result.Progress.Close()
+			}
+			if result.Repl != nil {
+				result.Repl.Close()
+			}
+			if owner != nil {
+				owner.clear()
+			}
+			return nil, fmt.Errorf("invalid print payload: %w", err)
+		}
+		if print != nil {
+			for _, item := range prints {
+				stream := "stdout"
+				if item.Stream == wirePrintStderr {
+					stream = "stderr"
+				}
+				print(stream, item.Text)
+			}
+		}
 	}
 
 	if result.Error != nil {

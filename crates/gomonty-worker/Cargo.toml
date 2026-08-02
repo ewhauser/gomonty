@@ -1,0 +1,21 @@
+[package]
+name = "gomonty-worker"
+description = "Pinned Monty subprocess worker bundled by the Go bindings"
+version = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+publish = false
+
+[[bin]]
+name = "gomonty-worker"
+path = "src/main.rs"
+
+[dependencies]
+monty_proto = { workspace = true, features = ["worker"] }
+
+[lints]
+workspace = true

@@ -5,10 +5,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATE_DIR="$ROOT_DIR/crates/monty-go-ffi"
 HEADER_PATH="$ROOT_DIR/internal/ffi/include/monty_go_ffi.h"
 LIB_ROOT="$ROOT_DIR/internal/ffi/lib"
+TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 SKIP_HEADER="${MONTY_GO_FFI_SKIP_HEADER:-0}"
+OUTPUT_DIR="${GOMONTY_NATIVE_OUTPUT_DIR:-}"
 
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "cargo is required" >&2
+if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+  echo "rustc and cargo are required" >&2
+  exit 1
+fi
+
+expected_rust="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' "$ROOT_DIR/rust-toolchain.toml")"
+export RUSTUP_TOOLCHAIN="$expected_rust"
+actual_rust="$(rustc --version | awk '{print $2}')"
+actual_cargo="$(cargo --version | awk '{print $2}')"
+if [[ -z "$expected_rust" || "$actual_rust" != "$expected_rust" || "$actual_cargo" != "$expected_rust" ]]; then
+  echo "Rust and Cargo $expected_rust are required; found rustc $actual_rust and cargo $actual_cargo" >&2
   exit 1
 fi
 
@@ -52,26 +63,32 @@ case "$target" in
   aarch64-apple-darwin)
     lib_dir="$LIB_ROOT/darwin_arm64"
     lib_name="libmonty_go_ffi.dylib"
+    worker_name="gomonty-worker"
     ;;
   aarch64-unknown-linux-gnu)
     lib_dir="$LIB_ROOT/linux_arm64"
     lib_name="libmonty_go_ffi.so"
+    worker_name="gomonty-worker"
     ;;
   aarch64-unknown-linux-musl)
     lib_dir="$LIB_ROOT/linux_arm64_musl"
     lib_name="libmonty_go_ffi.so"
+    worker_name="gomonty-worker"
     ;;
   x86_64-unknown-linux-gnu)
     lib_dir="$LIB_ROOT/linux_amd64"
     lib_name="libmonty_go_ffi.so"
+    worker_name="gomonty-worker"
     ;;
   x86_64-unknown-linux-musl)
     lib_dir="$LIB_ROOT/linux_amd64_musl"
     lib_name="libmonty_go_ffi.so"
+    worker_name="gomonty-worker"
     ;;
   x86_64-pc-windows-msvc)
     lib_dir="$LIB_ROOT/windows_amd64"
     lib_name="monty_go_ffi.dll"
+    worker_name="gomonty-worker.exe"
     ;;
   *)
     echo "unsupported target: $target" >&2
@@ -89,38 +106,69 @@ if [[ "$target" == *-unknown-linux-musl ]]; then
     exit 1
   fi
 
-  # On a musl-native host (for example Alpine), the default compiler already
-  # targets musl and can link the shared library directly.
-  if [[ "${MONTY_GO_FFI_MUSL_NATIVE:-0}" != "1" ]]; then
+  # Rust's dynamic musl link mode selects libgcc_s. Always route the final link
+  # through our wrapper so GCC builtins and unwinding are embedded instead of
+  # becoming an undocumented runtime dependency.
+  if [[ "${MONTY_GO_FFI_MUSL_NATIVE:-0}" == "1" ]]; then
+    export GOMONTY_MUSL_CC="${GOMONTY_MUSL_CC:-cc}"
+  else
     if ! command -v musl-gcc >/dev/null 2>&1; then
       echo "musl-gcc is required to build shared libraries for $target on glibc Linux hosts; set MONTY_GO_FFI_MUSL_NATIVE=1 on musl-native builders" >&2
       exit 1
     fi
-
-    linker_var="CARGO_TARGET_${target^^}_LINKER"
-    linker_var="${linker_var//-/_}"
-    if [[ -z "${!linker_var:-}" ]]; then
-      export "$linker_var=musl-gcc"
-    fi
+    export GOMONTY_MUSL_CC="${GOMONTY_MUSL_CC:-musl-gcc}"
   fi
+
+  linker_var="CARGO_TARGET_${target^^}_LINKER"
+  linker_var="${linker_var//-/_}"
+  export "$linker_var=$ROOT_DIR/scripts/musl-linker.sh"
+fi
+
+if [[ -n "$OUTPUT_DIR" ]]; then
+  lib_dir="$OUTPUT_DIR"
 fi
 
 mkdir -p "$lib_dir"
 
-echo "Building monty-go-ffi for $target"
-cargo build --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi --release --target "$target"
+echo "Building monty-go-ffi and gomonty-worker for $target"
+cargo build --locked --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi -p gomonty-worker --release --target "$target"
 
 if [[ "$SKIP_HEADER" != "1" ]]; then
   echo "Refreshing C header"
   cbindgen --config "$CRATE_DIR/cbindgen.toml" --crate monty-go-ffi --output "$HEADER_PATH" "$CRATE_DIR"
 fi
 
-artifact="$ROOT_DIR/target/$target/release/$lib_name"
+artifact="$TARGET_ROOT/$target/release/$lib_name"
+worker_artifact="$TARGET_ROOT/$target/release/$worker_name"
 if [[ ! -f "$artifact" ]]; then
   echo "expected artifact not found: $artifact" >&2
   exit 1
 fi
+if [[ ! -f "$worker_artifact" ]]; then
+  echo "expected worker artifact not found: $worker_artifact" >&2
+  exit 1
+fi
+
+if [[ "$target" == *-unknown-linux-musl ]]; then
+  if ! command -v readelf >/dev/null 2>&1; then
+    echo "readelf is required to verify musl runtime dependencies" >&2
+    exit 1
+  fi
+
+  for native_artifact in "$artifact" "$worker_artifact"; do
+    while IFS= read -r dependency; do
+      case "$dependency" in
+        libc.musl-*.so.1) ;;
+        *)
+          echo "unexpected dynamic dependency $dependency in $native_artifact" >&2
+          exit 1
+          ;;
+      esac
+    done < <(LC_ALL=C readelf -d "$native_artifact" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')
+  done
+fi
 
 cp "$artifact" "$lib_dir/$lib_name"
+cp "$worker_artifact" "$lib_dir/$worker_name"
 rm -f "$lib_dir/libmonty_go_ffi.a" "$lib_dir/monty_go_ffi.lib"
-echo "Wrote $lib_dir/$lib_name"
+echo "Wrote $lib_dir/$lib_name and $lib_dir/$worker_name"

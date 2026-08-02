@@ -61,6 +61,12 @@
 
 #define WIRE_VALUE_TIMEZONE 23
 
+#define WIRE_VALUE_TYPE 24
+
+#define WIRE_VALUE_BUILTIN_FUNCTION 25
+
+#define WIRE_VALUE_FILE_HANDLE 26
+
 #define WIRE_CALL_RESULT_RETURN 0
 
 #define WIRE_CALL_RESULT_EXCEPTION 1
@@ -79,37 +85,35 @@
 
 #define WIRE_PROGRESS_COMPLETE 3
 
+#define WIRE_PRINT_STDOUT 0
+
+#define WIRE_PRINT_STDERR 1
+
 /**
- * Opaque error handle for the Go bindings.
+ * Opaque error handle for Go.
  */
 typedef struct MontyGoError MontyGoError;
 
 /**
- * Opaque progress handle for the Go bindings.
+ * Opaque in-flight progress handle for Go.
  */
 typedef struct MontyGoProgress MontyGoProgress;
 
 /**
- * Opaque REPL handle for the Go bindings.
+ * Opaque REPL handle for Go.
  */
 typedef struct MontyGoRepl MontyGoRepl;
 
 /**
- * Opaque runner handle for the Go bindings.
+ * Opaque runner handle for Go.
  */
 typedef struct MontyGoRunner MontyGoRunner;
 
 /**
- * Heap-allocated bytes returned across the C ABI.
+ * Heap-allocated bytes returned through the C ABI.
  */
 typedef struct MontyGoBytes {
-  /**
-   * Pointer to the byte buffer.
-   */
   uint8_t *ptr;
-  /**
-   * Buffer length in bytes.
-   */
   uintptr_t len;
 } MontyGoBytes;
 
@@ -117,13 +121,7 @@ typedef struct MontyGoBytes {
  * Result of runner construction or loading.
  */
 typedef struct MontyGoRunnerResult {
-  /**
-   * Created runner handle on success.
-   */
   struct MontyGoRunner *runner;
-  /**
-   * Error handle on failure.
-   */
   struct MontyGoError *error;
 } MontyGoRunnerResult;
 
@@ -131,24 +129,12 @@ typedef struct MontyGoRunnerResult {
  * Result of start/resume/feed operations.
  */
 typedef struct MontyGoOpResult {
-  /**
-   * Progress handle on success.
-   */
   struct MontyGoProgress *progress;
-  /**
-   * Decoded payload for the current progress state.
-   */
   struct MontyGoBytes progress_payload;
-  /**
-   * Error handle on failure.
-   */
   struct MontyGoError *error;
-  /**
-   * Recovered REPL handle for REPL runtime errors.
-   */
   struct MontyGoRepl *repl;
   /**
-   * Captured `print()` output from this step.
+   * MessagePack encoded `Vec<WirePrint>`.
    */
   struct MontyGoBytes prints;
 } MontyGoOpResult;
@@ -157,13 +143,7 @@ typedef struct MontyGoOpResult {
  * Result of REPL construction or loading.
  */
 typedef struct MontyGoReplResult {
-  /**
-   * Created REPL handle on success.
-   */
   struct MontyGoRepl *repl;
-  /**
-   * Error handle on failure.
-   */
   struct MontyGoError *error;
 } MontyGoReplResult;
 
@@ -177,9 +157,28 @@ void monty_go_runner_free(struct MontyGoRunner *runner);
 
 void monty_go_repl_free(struct MontyGoRepl *repl);
 
+/**
+ * Returns the local worker PID for diagnostics/tests, or zero when the REPL
+ * is empty or uses a non-process transport.
+ */
+uint32_t monty_go_repl_worker_pid(const struct MontyGoRepl *repl);
+
 void monty_go_progress_free(struct MontyGoProgress *progress);
 
+/**
+ * Returns the local worker PID for an in-flight/REPL-complete progress
+ * handle, or zero when no worker is owned.
+ */
+uint32_t monty_go_progress_worker_pid(const struct MontyGoProgress *progress);
+
 void monty_go_error_free(struct MontyGoError *error);
+
+/**
+ * Initializes the process-wide default subprocess pool. The Go loader calls
+ * this immediately after extracting the version-matched worker executable.
+ */
+struct MontyGoError *monty_go_runtime_init(const uint8_t *worker_path_ptr,
+                                           uintptr_t worker_path_len);
 
 void monty_go_error_json(const struct MontyGoError *error, struct MontyGoBytes *out);
 
@@ -217,7 +216,7 @@ void monty_go_repl_new(const uint8_t *options_ptr,
 
 void monty_go_repl_load(const uint8_t *data_ptr, uintptr_t data_len, struct MontyGoReplResult *out);
 
-void monty_go_repl_dump(const struct MontyGoRepl *repl,
+void monty_go_repl_dump(struct MontyGoRepl *repl,
                         struct MontyGoBytes *out,
                         struct MontyGoError **error_out);
 
@@ -232,7 +231,7 @@ void monty_go_progress_describe(const struct MontyGoProgress *progress,
                                 struct MontyGoBytes *out,
                                 struct MontyGoError **error_out);
 
-void monty_go_progress_dump(const struct MontyGoProgress *progress,
+void monty_go_progress_dump(struct MontyGoProgress *progress,
                             struct MontyGoBytes *out,
                             struct MontyGoError **error_out);
 
