@@ -22,10 +22,12 @@ All five dependencies must use the same exact release commit because the FFI
 library and worker negotiate Monty's versioned subprocess protocol. The Rust
 toolchain is pinned in both `rust-toolchain.toml` and the release manifest;
 build preparation rejects a compiler, Cargo version, or target standard library
-that does not match. Release builders pin Python 3.12.13. Musl CI additionally
-uses separate Go 1.25.0 and Rust 1.95.0 Alpine images by immutable multi-platform
-digest and pins every explicitly installed Alpine build package; missing pinned
-packages fail the build instead of silently selecting newer tools. The Go
+that does not match. Hosted GNU, Darwin, and Windows builders pin and verify
+Python 3.12.10, the newest exact 3.12 patch published by `actions/python-versions`
+for every supported native platform. Musl CI independently pins Alpine Python
+3.12.13-r0 and uses separate Go 1.25.0 and Rust 1.95.0 Alpine images by immutable
+multi-platform digest. Every explicitly installed Alpine build package is pinned;
+missing pinned packages fail the build instead of silently selecting newer tools. The Go
 consumer is compiled inside Alpine because the pure-Go FFI loader still links
 to the host libc: an Ubuntu cross-build is a glibc executable even when
 `CGO_ENABLED=0`, and therefore is not a valid musl proof.
