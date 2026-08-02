@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/monty-go-ffi"]
+members = ["crates/gomonty-worker", "crates/monty-go-ffi"]
 
 [workspace.package]
 edition = "2024"
 version = "0.0.14"
-rust-version = "1.90"
+rust-version = "1.95"
 license = "MIT"
 authors = ["Eric Hauser"]
 categories = ["compilers", "emulators", "development-tools"]
@@ -20,9 +20,13 @@ codegen-units = 1
 strip = true
 
 [workspace.dependencies]
-# Upstream Monty pin. Keep both rev values aligned when bumping.
-monty = { git = "https://github.com/pydantic/monty.git", rev = "c9802b5f30d11fecf9f153feb1dfdab3abda070e" }
-monty_type_checking = { git = "https://github.com/pydantic/monty.git", package = "monty_type_checking", rev = "c9802b5f30d11fecf9f153feb1dfdab3abda070e" }
+# Upstream Monty v0.0.19. Keep every Monty crate on the exact same release
+# commit: the subprocess protocol intentionally rejects version skew.
+monty = { git = "https://github.com/pydantic/monty.git", rev = "e347739909877f4fb03877e23dd092286fc7e659" }
+monty_pool = { git = "https://github.com/pydantic/monty.git", package = "monty-pool", rev = "e347739909877f4fb03877e23dd092286fc7e659" }
+monty_proto = { git = "https://github.com/pydantic/monty.git", package = "monty-proto", rev = "e347739909877f4fb03877e23dd092286fc7e659" }
+monty_types = { git = "https://github.com/pydantic/monty.git", package = "monty-types", rev = "e347739909877f4fb03877e23dd092286fc7e659" }
+monty_type_checking = { git = "https://github.com/pydantic/monty.git", package = "monty-type-checking", rev = "e347739909877f4fb03877e23dd092286fc7e659" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rmp-serde = "1.3"

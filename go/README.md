@@ -9,9 +9,13 @@
 
 ## Status
 
-This package is currently experimental.
+This fork is currently experimental and pins Monty v0.0.19 exactly.
 
-It uses `purego` to load a bundled native shared library for the target platform from `internal/ffi/lib/...`.
+It uses `purego` to load a bundled native shared library and starts a bundled,
+version-matched Monty protocol worker. Python execution occurs in worker
+subprocesses; a crashed worker is discarded and recoverable snapshots are
+restored in a replacement process. Subprocess isolation is not an OS security
+sandbox.
 
 The code is wired for these targets:
 
@@ -22,14 +26,19 @@ The code is wired for these targets:
 - `linux/arm64` with musl shared libraries when built with `-tags musl`
 - `windows/amd64`
 
-If the shared library for your target is missing from the source tree, builds for that target will fail. If extraction or loading fails at runtime, the package returns a synthetic "native bindings unavailable" error.
+If either native artifact for your target is missing from the source tree,
+builds for that target will fail. If extraction, loading, spawning, or protocol
+negotiation fails at runtime, the package returns a synthetic "native bindings
+unavailable" error.
 
 ## Requirements
 
 - Go 1.25+
-- `CGO_ENABLED=0`
-- a repo/tag that includes the native shared library for your target
+- a repo/tag that includes the native shared library and worker for your target
 - `-tags musl` when building on Alpine or another musl-based Linux environment
+
+The bindings are cgo-free; consumers do not need a C toolchain, and builds work
+with either value of `CGO_ENABLED`.
 
 ## Install
 
@@ -163,6 +172,9 @@ Common constructors:
 - `monty.DictValue(...)`
 - `monty.PathValue(...)`
 - `monty.DataclassValue(...)`
+- `monty.TypeValue(...)`
+- `monty.BuiltinFunctionValue(...)`
+- `monty.FileHandleValue(...)`
 
 You can also convert ordinary Go values with `monty.ValueOf(...)` or `monty.MustValueOf(...)`.
 
@@ -227,7 +239,22 @@ Snapshots and runners are serializable with:
 - `Runner.Dump()` / `LoadRunner(...)`
 - `Snapshot.Dump()` / `LoadSnapshot(...)`
 - `LoadReplSnapshot(...)`
-- `Repl.Dump()`
+- `Repl.Dump()` / `LoadRepl(...)`
+
+`Runner.Close()` and `Repl.Close()` release their native handles explicitly;
+closing an idle REPL returns its worker to the internal pool. `WorkerPID()` on a
+REPL or suspended snapshot is a diagnostic aid for crash-isolation testing, not
+a stable session identifier.
+
+## Latest Monty Options
+
+`CompileOptions` and `ReplOptions` expose v0.0.19 type-check stubs and enhanced
+assert-message configuration. `FeedOptions.SkipTypeCheck` and
+`FeedStartOptions.SkipTypeCheck` bypass per-session type checking for one feed.
+
+`AssertMessageAnnotations` is optional: nil keeps Monty's 120-byte default, a
+pointer to zero disables enhanced messages, and a positive value sets the
+per-operand UTF-8 truncation cap.
 
 ## Errors
 

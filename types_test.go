@@ -111,6 +111,55 @@ func TestDateTimeValueOf(t *testing.T) {
 	}
 }
 
+func TestLatestMontyValueVariants(t *testing.T) {
+	values := []Value{
+		TypeValue(Type{Name: "int"}),
+		BuiltinFunctionValue(BuiltinFunction{Name: "len"}),
+		FileHandleValue(FileHandle{Path: "/virtual/data.txt", Mode: "rb", Position: 17}),
+		CycleRefValue(Cycle{ID: 42, Placeholder: "[...]"}),
+	}
+	for _, original := range values {
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", original.Kind(), err)
+		}
+		var decoded Value
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal %s: %v", original.Kind(), err)
+		}
+		data2, err := json.Marshal(decoded)
+		if err != nil {
+			t.Fatalf("re-marshal %s: %v", original.Kind(), err)
+		}
+		if string(data) != string(data2) {
+			t.Fatalf("round-trip mismatch for %s:\n%s\n%s", original.Kind(), data, data2)
+		}
+	}
+
+	if got, ok := values[0].Type(); !ok || got != (Type{Name: "int"}) {
+		t.Fatalf("Type() = %#v, %v", got, ok)
+	}
+	if got, ok := values[1].BuiltinFunction(); !ok || got.Name != "len" {
+		t.Fatalf("BuiltinFunction() = %#v, %v", got, ok)
+	}
+	if got, ok := values[2].FileHandle(); !ok || got.Position != 17 {
+		t.Fatalf("FileHandle() = %#v, %v", got, ok)
+	}
+	if got, ok := values[3].Cycle(); !ok || got.ID != 42 {
+		t.Fatalf("Cycle() = %#v, %v", got, ok)
+	}
+
+	for _, value := range []any{
+		Type{Name: "str"},
+		BuiltinFunction{Name: "len"},
+		FileHandle{Path: "/virtual/data.txt", Mode: "r"},
+	} {
+		if _, err := ValueOf(value); err != nil {
+			t.Fatalf("ValueOf(%T): %v", value, err)
+		}
+	}
+}
+
 func TestDateTimeString(t *testing.T) {
 	v := DateValue(Date{Year: 2026, Month: 3, Day: 29})
 	if s := v.String(); s != "2026-03-29" {

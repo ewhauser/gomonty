@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATE_DIR="$ROOT_DIR/crates/monty-go-ffi"
 HEADER_PATH="$ROOT_DIR/internal/ffi/include/monty_go_ffi.h"
 LIB_ROOT="$ROOT_DIR/internal/ffi/lib"
+TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 SKIP_HEADER="${MONTY_GO_FFI_SKIP_HEADER:-0}"
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -52,26 +53,32 @@ case "$target" in
   aarch64-apple-darwin)
     lib_dir="$LIB_ROOT/darwin_arm64"
     lib_name="libmonty_go_ffi.dylib"
+    worker_name="gomonty-worker"
     ;;
   aarch64-unknown-linux-gnu)
     lib_dir="$LIB_ROOT/linux_arm64"
     lib_name="libmonty_go_ffi.so"
+    worker_name="gomonty-worker"
     ;;
   aarch64-unknown-linux-musl)
     lib_dir="$LIB_ROOT/linux_arm64_musl"
     lib_name="libmonty_go_ffi.so"
+    worker_name="gomonty-worker"
     ;;
   x86_64-unknown-linux-gnu)
     lib_dir="$LIB_ROOT/linux_amd64"
     lib_name="libmonty_go_ffi.so"
+    worker_name="gomonty-worker"
     ;;
   x86_64-unknown-linux-musl)
     lib_dir="$LIB_ROOT/linux_amd64_musl"
     lib_name="libmonty_go_ffi.so"
+    worker_name="gomonty-worker"
     ;;
   x86_64-pc-windows-msvc)
     lib_dir="$LIB_ROOT/windows_amd64"
     lib_name="monty_go_ffi.dll"
+    worker_name="gomonty-worker.exe"
     ;;
   *)
     echo "unsupported target: $target" >&2
@@ -107,20 +114,26 @@ fi
 
 mkdir -p "$lib_dir"
 
-echo "Building monty-go-ffi for $target"
-cargo build --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi --release --target "$target"
+echo "Building monty-go-ffi and gomonty-worker for $target"
+cargo build --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi -p gomonty-worker --release --target "$target"
 
 if [[ "$SKIP_HEADER" != "1" ]]; then
   echo "Refreshing C header"
   cbindgen --config "$CRATE_DIR/cbindgen.toml" --crate monty-go-ffi --output "$HEADER_PATH" "$CRATE_DIR"
 fi
 
-artifact="$ROOT_DIR/target/$target/release/$lib_name"
+artifact="$TARGET_ROOT/$target/release/$lib_name"
+worker_artifact="$TARGET_ROOT/$target/release/$worker_name"
 if [[ ! -f "$artifact" ]]; then
   echo "expected artifact not found: $artifact" >&2
   exit 1
 fi
+if [[ ! -f "$worker_artifact" ]]; then
+  echo "expected worker artifact not found: $worker_artifact" >&2
+  exit 1
+fi
 
 cp "$artifact" "$lib_dir/$lib_name"
+cp "$worker_artifact" "$lib_dir/$worker_name"
 rm -f "$lib_dir/libmonty_go_ffi.a" "$lib_dir/monty_go_ffi.lib"
-echo "Wrote $lib_dir/$lib_name"
+echo "Wrote $lib_dir/$lib_name and $lib_dir/$worker_name"

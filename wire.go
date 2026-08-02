@@ -34,6 +34,9 @@ const (
 	wireValueDateTime
 	wireValueTimeDelta
 	wireValueTimeZone
+	wireValueType
+	wireValueBuiltinFunction
+	wireValueFileHandle
 )
 
 const (
@@ -60,26 +63,30 @@ type wirePair struct {
 }
 
 type wireValue struct {
-	Kind        uint8       `msgpack:"kind"`
-	Bool        bool        `msgpack:"bool,omitempty"`
-	Int         int64       `msgpack:"int,omitempty"`
-	BigInt      string      `msgpack:"big_int,omitempty"`
-	Float       float64     `msgpack:"float,omitempty"`
-	String      string      `msgpack:"string,omitempty"`
-	Bytes       []byte      `msgpack:"bytes,omitempty"`
-	Items       []wireValue `msgpack:"items,omitempty"`
-	TypeName    string      `msgpack:"type_name,omitempty"`
-	FieldNames  []string    `msgpack:"field_names,omitempty"`
-	Values      []wireValue `msgpack:"values,omitempty"`
-	Pairs       []wirePair  `msgpack:"pairs,omitempty"`
-	ExcType     string      `msgpack:"exc_type,omitempty"`
-	Arg         *string     `msgpack:"arg,omitempty"`
-	Name        string      `msgpack:"name,omitempty"`
-	TypeID      uint64      `msgpack:"type_id,omitempty"`
-	Attrs       []wirePair  `msgpack:"attrs,omitempty"`
-	Frozen      bool        `msgpack:"frozen,omitempty"`
+	Kind         uint8       `msgpack:"kind"`
+	Bool         bool        `msgpack:"bool,omitempty"`
+	Int          int64       `msgpack:"int,omitempty"`
+	BigInt       string      `msgpack:"big_int,omitempty"`
+	Float        float64     `msgpack:"float,omitempty"`
+	String       string      `msgpack:"string,omitempty"`
+	Bytes        []byte      `msgpack:"bytes,omitempty"`
+	Items        []wireValue `msgpack:"items,omitempty"`
+	TypeName     string      `msgpack:"type_name,omitempty"`
+	FieldNames   []string    `msgpack:"field_names,omitempty"`
+	Values       []wireValue `msgpack:"values,omitempty"`
+	Pairs        []wirePair  `msgpack:"pairs,omitempty"`
+	ExcType      string      `msgpack:"exc_type,omitempty"`
+	Arg          *string     `msgpack:"arg,omitempty"`
+	Name         string      `msgpack:"name,omitempty"`
+	TypeID       uint64      `msgpack:"type_id,omitempty"`
+	Attrs        []wirePair  `msgpack:"attrs,omitempty"`
+	Frozen       bool        `msgpack:"frozen,omitempty"`
 	Docstring    *string     `msgpack:"docstring,omitempty"`
 	Placeholder  string      `msgpack:"placeholder,omitempty"`
+	CycleID      uint64      `msgpack:"cycle_id,omitempty"`
+	InstanceType bool        `msgpack:"instance_type,omitempty"`
+	FileMode     string      `msgpack:"file_mode,omitempty"`
+	Position     uint64      `msgpack:"position,omitempty"`
 	Year         int32       `msgpack:"year,omitempty"`
 	Month        uint8       `msgpack:"month,omitempty"`
 	Day          uint8       `msgpack:"day,omitempty"`
@@ -95,11 +102,12 @@ type wireValue struct {
 }
 
 type wireCompileOptions struct {
-	Version        uint32   `msgpack:"version"`
-	ScriptName     *string  `msgpack:"script_name,omitempty"`
-	Inputs         []string `msgpack:"inputs,omitempty"`
-	TypeCheck      bool     `msgpack:"type_check,omitempty"`
-	TypeCheckStubs *string  `msgpack:"type_check_stubs,omitempty"`
+	Version                  uint32   `msgpack:"version"`
+	ScriptName               *string  `msgpack:"script_name,omitempty"`
+	Inputs                   []string `msgpack:"inputs,omitempty"`
+	TypeCheck                bool     `msgpack:"type_check,omitempty"`
+	TypeCheckStubs           *string  `msgpack:"type_check_stubs,omitempty"`
+	AssertMessageAnnotations *uint32  `msgpack:"assert_message_annotations,omitempty"`
 }
 
 type wireResourceLimits struct {
@@ -118,14 +126,28 @@ type wireStartOptions struct {
 }
 
 type wireReplOptions struct {
-	Version    uint32              `msgpack:"version"`
-	ScriptName *string             `msgpack:"script_name,omitempty"`
-	Limits     *wireResourceLimits `msgpack:"limits,omitempty"`
+	Version                  uint32              `msgpack:"version"`
+	ScriptName               *string             `msgpack:"script_name,omitempty"`
+	Limits                   *wireResourceLimits `msgpack:"limits,omitempty"`
+	TypeCheck                bool                `msgpack:"type_check,omitempty"`
+	TypeCheckStubs           *string             `msgpack:"type_check_stubs,omitempty"`
+	AssertMessageAnnotations *uint32             `msgpack:"assert_message_annotations,omitempty"`
 }
 
 type wireFeedOptions struct {
-	Version uint32               `msgpack:"version"`
-	Inputs  map[string]wireValue `msgpack:"inputs,omitempty"`
+	Version       uint32               `msgpack:"version"`
+	Inputs        map[string]wireValue `msgpack:"inputs,omitempty"`
+	SkipTypeCheck bool                 `msgpack:"skip_type_check,omitempty"`
+}
+
+const (
+	wirePrintStdout uint8 = iota
+	wirePrintStderr
+)
+
+type wirePrint struct {
+	Stream uint8  `msgpack:"stream"`
+	Text   string `msgpack:"text"`
 }
 
 type callResultPayload struct {
@@ -183,11 +205,12 @@ func unmarshalWire(data []byte, target any) error {
 
 func newWireCompileOptions(opts CompileOptions) wireCompileOptions {
 	return wireCompileOptions{
-		Version:        wireVersion,
-		ScriptName:     optionalString(opts.ScriptName),
-		Inputs:         opts.Inputs,
-		TypeCheck:      opts.TypeCheck,
-		TypeCheckStubs: optionalString(opts.TypeCheckStubs),
+		Version:                  wireVersion,
+		ScriptName:               optionalString(opts.ScriptName),
+		Inputs:                   opts.Inputs,
+		TypeCheck:                opts.TypeCheck,
+		TypeCheckStubs:           optionalString(opts.TypeCheckStubs),
+		AssertMessageAnnotations: optionalAssertMessageAnnotations(opts.AssertMessageAnnotations),
 	}
 }
 
@@ -205,9 +228,12 @@ func newWireStartOptions(opts StartOptions) (wireStartOptions, error) {
 
 func newWireReplOptions(opts ReplOptions) wireReplOptions {
 	return wireReplOptions{
-		Version:    wireVersion,
-		ScriptName: optionalString(opts.ScriptName),
-		Limits:     newWireResourceLimits(opts.Limits),
+		Version:                  wireVersion,
+		ScriptName:               optionalString(opts.ScriptName),
+		Limits:                   newWireResourceLimits(opts.Limits),
+		TypeCheck:                opts.TypeCheck,
+		TypeCheckStubs:           optionalString(opts.TypeCheckStubs),
+		AssertMessageAnnotations: optionalAssertMessageAnnotations(opts.AssertMessageAnnotations),
 	}
 }
 
@@ -217,8 +243,9 @@ func newWireFeedOptions(opts FeedStartOptions) (wireFeedOptions, error) {
 		return wireFeedOptions{}, err
 	}
 	return wireFeedOptions{
-		Version: wireVersion,
-		Inputs:  inputs,
+		Version:       wireVersion,
+		Inputs:        inputs,
+		SkipTypeCheck: opts.SkipTypeCheck,
 	}, nil
 }
 
@@ -322,6 +349,14 @@ func newWireResourceLimits(limits *ResourceLimits) *wireResourceLimits {
 		payload.MaxDurationSecs = &seconds
 	}
 	return payload
+}
+
+func optionalAssertMessageAnnotations(value *AssertMessageAnnotations) *uint32 {
+	if value == nil {
+		return nil
+	}
+	maxBytes := uint32(*value)
+	return &maxBytes
 }
 
 func wireValueMapFromPublic(values map[string]Value) (map[string]wireValue, error) {
@@ -500,7 +535,8 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 	case valueKindRepr:
 		return wireValue{Kind: wireValueRepr, String: value.data.(string)}, nil
 	case valueKindCycle:
-		return wireValue{Kind: wireValueCycle, Placeholder: value.data.(string)}, nil
+		cycle := value.data.(Cycle)
+		return wireValue{Kind: wireValueCycle, CycleID: cycle.ID, Placeholder: cycle.Placeholder}, nil
 	case valueKindDate:
 		date := value.data.(Date)
 		return wireValue{
@@ -537,6 +573,24 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			Kind:         wireValueTimeZone,
 			Days:         tz.OffsetSeconds,
 			TimezoneName: tz.Name,
+		}, nil
+	case valueKindType:
+		pythonType := value.data.(Type)
+		return wireValue{
+			Kind:         wireValueType,
+			TypeName:     pythonType.Name,
+			InstanceType: pythonType.Instance,
+		}, nil
+	case valueKindBuiltin:
+		builtin := value.data.(BuiltinFunction)
+		return wireValue{Kind: wireValueBuiltinFunction, Name: builtin.Name}, nil
+	case valueKindFileHandle:
+		file := value.data.(FileHandle)
+		return wireValue{
+			Kind:     wireValueFileHandle,
+			String:   string(file.Path),
+			FileMode: file.Mode,
+			Position: file.Position,
 		}, nil
 	default:
 		return wireValue{}, fmt.Errorf("unsupported value kind %q", value.Kind())
@@ -626,7 +680,7 @@ func (value wireValue) toPublic() (Value, error) {
 	case wireValueRepr:
 		return ReprValue(value.String), nil
 	case wireValueCycle:
-		return CycleValue(value.Placeholder), nil
+		return CycleRefValue(Cycle{ID: value.CycleID, Placeholder: value.Placeholder}), nil
 	case wireValueDate:
 		return DateValue(Date{
 			Year:  value.Year,
@@ -655,6 +709,16 @@ func (value wireValue) toPublic() (Value, error) {
 		return TimeZoneValue(TimeZone{
 			OffsetSeconds: value.Days,
 			Name:          value.TimezoneName,
+		}), nil
+	case wireValueType:
+		return TypeValue(Type{Name: value.TypeName, Instance: value.InstanceType}), nil
+	case wireValueBuiltinFunction:
+		return BuiltinFunctionValue(BuiltinFunction{Name: value.Name}), nil
+	case wireValueFileHandle:
+		return FileHandleValue(FileHandle{
+			Path:     Path(value.String),
+			Mode:     value.FileMode,
+			Position: value.Position,
 		}), nil
 	default:
 		return Value{}, fmt.Errorf("unknown wire value kind %d", value.Kind)

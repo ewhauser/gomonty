@@ -2,6 +2,7 @@ name: verify
 
 on:
   pull_request: {}
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -34,10 +35,11 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Build native shared library
+      - name: Build native artifacts
         shell: bash
         run: |
-          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          export PYO3_PYTHON
           MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
 
       - name: Run CGO-disabled tests
@@ -64,21 +66,25 @@ jobs:
           - name: linux-amd64
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
+            artifact_path: internal/ffi/lib/linux_amd64/
             run_go_tests: true
             build_only_note: ""
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
+            artifact_path: internal/ffi/lib/linux_arm64/
             run_go_tests: true
             build_only_note: ""
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
+            artifact_path: internal/ffi/lib/darwin_arm64/
             run_go_tests: true
             build_only_note: ""
           - name: windows-amd64
             runner: windows-latest
             rust_target: x86_64-pc-windows-msvc
+            artifact_path: internal/ffi/lib/windows_amd64/
             run_go_tests: true
             build_only_note: ""
 
@@ -107,10 +113,11 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Build native shared library
+      - name: Build native artifacts
         shell: bash
         run: |
-          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          export PYO3_PYTHON
           MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
 
       - name: Run Go tests
@@ -118,6 +125,23 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go test ./...
+
+      - name: Run single-worker snapshot recovery test
+        if: matrix.name == 'linux-amd64'
+        env:
+          CGO_ENABLED: "0"
+        run: taskset --cpu-list 0 go test -run '^TestReplSnapshotRestoresAndCancellationAbandonsFeed$' -count=10 ./...
+
+      - name: Run Go race tests
+        if: matrix.run_go_tests
+        run: go test -race -count=1 ./...
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.name }}
+          path: ${{ matrix.artifact_path }}
+          retention-days: 3
 
       - name: Build-only verification note
         if: ${{ !matrix.run_go_tests }}
@@ -129,25 +153,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build native shared library in musl container
+      - name: Build native artifacts in musl container
         shell: bash
         run: |
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
-            rust:1.94-alpine3.21 \
+            rust:1.95-alpine3.21 \
             sh -c '
               set -eux
               apk add --no-cache bash build-base python3
               host="$(rustc -vV | sed -n "s/^host: //p")"
               test "$host" = "x86_64-unknown-linux-musl"
-              export PYO3_PYTHON="$(command -v python3)"
+              PYO3_PYTHON="$(command -v python3)"
+              export PYO3_PYTHON
               export MONTY_GO_FFI_MUSL_NATIVE=1
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh x86_64-unknown-linux-musl
             '
 
       - name: Build-only verification note
-        run: echo "Musl/Alpine shared libraries are build-verified in a musl-native container; native Go tests are not run on this workflow."
+        run: echo "Musl/Alpine shared libraries and workers are build-verified in a musl-native container; native Go tests are not run on this workflow."
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-amd64-musl
+          path: internal/ffi/lib/linux_amd64_musl/
+          retention-days: 3
 
   verify-musl-arm64:
     name: verify linux-musl-arm64
@@ -155,22 +187,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build native shared library in musl container
+      - name: Build native artifacts in musl container
         shell: bash
         run: |
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
-            rust:1.94-alpine3.21 \
+            rust:1.95-alpine3.21 \
             sh -c '
               set -eux
               apk add --no-cache bash build-base python3
               host="$(rustc -vV | sed -n "s/^host: //p")"
               test "$host" = "aarch64-unknown-linux-musl"
-              export PYO3_PYTHON="$(command -v python3)"
+              PYO3_PYTHON="$(command -v python3)"
+              export PYO3_PYTHON
               export MONTY_GO_FFI_MUSL_NATIVE=1
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh aarch64-unknown-linux-musl
             '
 
       - name: Build-only verification note
-        run: echo "Musl/Alpine shared libraries are build-verified in a musl-native container; native Go tests are not run on this workflow."
+        run: echo "Musl/Alpine shared libraries and workers are build-verified in a musl-native container; native Go tests are not run on this workflow."
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-arm64-musl
+          path: internal/ffi/lib/linux_arm64_musl/
+          retention-days: 3

@@ -41,6 +41,9 @@ const (
 	valueKindDateTime   ValueKind = "datetime"
 	valueKindTimeDelta  ValueKind = "timedelta"
 	valueKindTimeZone   ValueKind = "timezone"
+	valueKindType       ValueKind = "type"
+	valueKindBuiltin    ValueKind = "builtin_function"
+	valueKindFileHandle ValueKind = "file_handle"
 )
 
 // Value is the public tagged union used by the Go bindings.
@@ -129,6 +132,33 @@ type StatResult struct {
 // Path is an explicit Monty path value.
 type Path string
 
+// Type is a Python type object returned by Monty. Instance is true for a
+// sandbox-defined class; those values are output-only.
+type Type struct {
+	Name     string `json:"name"`
+	Instance bool   `json:"instance,omitempty"`
+}
+
+// BuiltinFunction identifies an interpreter-native Python builtin.
+type BuiltinFunction struct {
+	Name string `json:"name"`
+}
+
+// FileHandle is Monty's serializable virtual file state. It never contains a
+// host file descriptor or host path.
+type FileHandle struct {
+	Path     Path   `json:"path"`
+	Mode     string `json:"mode"`
+	Position uint64 `json:"position"`
+}
+
+// Cycle identifies a repeated object within one converted result. ID is
+// opaque and meaningful only for equality inside that result.
+type Cycle struct {
+	ID          uint64 `json:"id"`
+	Placeholder string `json:"placeholder"`
+}
+
 // Function is the explicit external-function value used during name lookup.
 type Function struct {
 	Name      string  `json:"name"`
@@ -168,24 +198,29 @@ type Call struct {
 type OSFunction string
 
 const (
-	OSPathExists     OSFunction = "Path.exists"
-	OSPathIsFile     OSFunction = "Path.is_file"
-	OSPathIsDir      OSFunction = "Path.is_dir"
-	OSPathIsSymlink  OSFunction = "Path.is_symlink"
-	OSPathReadText   OSFunction = "Path.read_text"
-	OSPathReadBytes  OSFunction = "Path.read_bytes"
-	OSPathWriteText  OSFunction = "Path.write_text"
-	OSPathWriteBytes OSFunction = "Path.write_bytes"
-	OSPathMkdir      OSFunction = "Path.mkdir"
-	OSPathUnlink     OSFunction = "Path.unlink"
-	OSPathRmdir      OSFunction = "Path.rmdir"
-	OSPathIterdir    OSFunction = "Path.iterdir"
-	OSPathStat       OSFunction = "Path.stat"
-	OSPathRename     OSFunction = "Path.rename"
-	OSPathResolve    OSFunction = "Path.resolve"
-	OSPathAbsolute   OSFunction = "Path.absolute"
-	OSGetenv         OSFunction = "os.getenv"
-	OSGetEnviron     OSFunction = "os.environ"
+	OSPathExists      OSFunction = "Path.exists"
+	OSPathIsFile      OSFunction = "Path.is_file"
+	OSPathIsDir       OSFunction = "Path.is_dir"
+	OSPathIsSymlink   OSFunction = "Path.is_symlink"
+	OSPathReadText    OSFunction = "Path.read_text"
+	OSPathReadBytes   OSFunction = "Path.read_bytes"
+	OSPathWriteText   OSFunction = "Path.write_text"
+	OSPathAppendText  OSFunction = "Path.append_text"
+	OSPathWriteBytes  OSFunction = "Path.write_bytes"
+	OSPathAppendBytes OSFunction = "Path.append_bytes"
+	OSPathMkdir       OSFunction = "Path.mkdir"
+	OSPathUnlink      OSFunction = "Path.unlink"
+	OSPathRmdir       OSFunction = "Path.rmdir"
+	OSPathIterdir     OSFunction = "Path.iterdir"
+	OSPathStat        OSFunction = "Path.stat"
+	OSPathRename      OSFunction = "Path.rename"
+	OSPathResolve     OSFunction = "Path.resolve"
+	OSPathAbsolute    OSFunction = "Path.absolute"
+	OSGetenv          OSFunction = "os.getenv"
+	OSGetEnviron      OSFunction = "os.environ"
+	OSOpen            OSFunction = "open"
+	OSDateToday       OSFunction = "date.today"
+	OSDateTimeNow     OSFunction = "datetime.now"
 )
 
 // OSCall describes an OS-level callback requested by Monty.
@@ -267,6 +302,9 @@ func Pending(waiter Waiter) Result {
 //
 // A zero field value leaves that limit unset.
 type ResourceLimits struct {
+	// MaxAllocations is retained for source compatibility. Monty v0.0.19 no
+	// longer exposes an allocation-count limit, so this field is not enforced.
+	// Deprecated: use MaxMemory and MaxDuration.
 	MaxAllocations    int
 	MaxDuration       time.Duration
 	MaxMemory         int
@@ -274,12 +312,22 @@ type ResourceLimits struct {
 	MaxRecursionDepth int
 }
 
+// AssertMessageAnnotations is Monty's per-operand UTF-8 byte cap for enhanced
+// assertion messages. A value of zero disables annotations and restores
+// CPython's empty message for a bare failing assert.
+//
+// CompileOptions and ReplOptions use a pointer so nil retains Monty's default
+// (currently 120 bytes), while a pointer to zero explicitly disables the
+// feature.
+type AssertMessageAnnotations uint32
+
 // CompileOptions configures runner compilation.
 type CompileOptions struct {
-	ScriptName     string
-	Inputs         []string
-	TypeCheck      bool
-	TypeCheckStubs string
+	ScriptName               string
+	Inputs                   []string
+	TypeCheck                bool
+	TypeCheckStubs           string
+	AssertMessageAnnotations *AssertMessageAnnotations
 }
 
 // StartOptions configures low-level runner execution.
@@ -290,13 +338,17 @@ type StartOptions struct {
 
 // ReplOptions configures REPL construction.
 type ReplOptions struct {
-	ScriptName string
-	Limits     *ResourceLimits
+	ScriptName               string
+	Limits                   *ResourceLimits
+	TypeCheck                bool
+	TypeCheckStubs           string
+	AssertMessageAnnotations *AssertMessageAnnotations
 }
 
 // FeedStartOptions configures low-level REPL snippet execution.
 type FeedStartOptions struct {
-	Inputs map[string]Value
+	Inputs        map[string]Value
+	SkipTypeCheck bool
 }
 
 // RunOptions configures the high-level runner helper loop.
@@ -310,10 +362,11 @@ type RunOptions struct {
 
 // FeedOptions configures the high-level REPL helper loop.
 type FeedOptions struct {
-	Inputs    map[string]Value
-	Functions map[string]ExternalFunction
-	OS        OSHandler
-	Print     PrintCallback
+	Inputs        map[string]Value
+	Functions     map[string]ExternalFunction
+	OS            OSHandler
+	Print         PrintCallback
+	SkipTypeCheck bool
 }
 
 // None returns the Python None value.
@@ -420,6 +473,11 @@ func ReprValue(value string) Value {
 
 // CycleValue returns an output-only cycle placeholder.
 func CycleValue(value string) Value {
+	return CycleRefValue(Cycle{Placeholder: value})
+}
+
+// CycleRefValue returns an output-only cycle reference with its opaque identity.
+func CycleRefValue(value Cycle) Value {
 	return Value{kind: valueKindCycle, data: value}
 }
 
@@ -441,6 +499,22 @@ func TimeDeltaValue(td TimeDelta) Value {
 // TimeZoneValue returns a timezone value.
 func TimeZoneValue(tz TimeZone) Value {
 	return Value{kind: valueKindTimeZone, data: tz}
+}
+
+// TypeValue returns a Python type object. Sandbox-defined instance types are
+// output-only and will be rejected if supplied back as interpreter input.
+func TypeValue(value Type) Value {
+	return Value{kind: valueKindType, data: value}
+}
+
+// BuiltinFunctionValue returns an interpreter-native builtin function value.
+func BuiltinFunctionValue(value BuiltinFunction) Value {
+	return Value{kind: valueKindBuiltin, data: value}
+}
+
+// FileHandleValue returns serializable virtual file state.
+func FileHandleValue(value FileHandle) Value {
+	return Value{kind: valueKindFileHandle, data: value}
 }
 
 // Kind reports the value variant.
@@ -577,6 +651,30 @@ func (v Value) TimeZone() (TimeZone, bool) {
 	return value, ok
 }
 
+// Type returns the Python type payload if present.
+func (v Value) Type() (Type, bool) {
+	value, ok := v.data.(Type)
+	return value, ok
+}
+
+// BuiltinFunction returns the builtin-function payload if present.
+func (v Value) BuiltinFunction() (BuiltinFunction, bool) {
+	value, ok := v.data.(BuiltinFunction)
+	return value, ok
+}
+
+// FileHandle returns the virtual file payload if present.
+func (v Value) FileHandle() (FileHandle, bool) {
+	value, ok := v.data.(FileHandle)
+	return value, ok
+}
+
+// Cycle returns the cycle-reference payload if present.
+func (v Value) Cycle() (Cycle, bool) {
+	value, ok := v.data.(Cycle)
+	return value, ok
+}
+
 // ValueOf converts a supported Go value into a Monty Value.
 func ValueOf(value any) (Value, error) {
 	switch value := value.(type) {
@@ -662,6 +760,12 @@ func ValueOf(value any) (Value, error) {
 		return TimeDeltaValue(value), nil
 	case TimeZone:
 		return TimeZoneValue(value), nil
+	case Type:
+		return TypeValue(value), nil
+	case BuiltinFunction:
+		return BuiltinFunctionValue(value), nil
+	case FileHandle:
+		return FileHandleValue(value), nil
 	case *big.Int:
 		return BigInt(value), nil
 	case big.Int:
@@ -906,10 +1010,12 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			Value string    `json:"value"`
 		}{Kind: valueKindRepr, Value: v.data.(string)})
 	case valueKindCycle:
+		payload := v.data.(Cycle)
 		return json.Marshal(struct {
 			Kind        ValueKind `json:"kind"`
+			ID          uint64    `json:"id"`
 			Placeholder string    `json:"placeholder"`
-		}{Kind: valueKindCycle, Placeholder: v.data.(string)})
+		}{Kind: valueKindCycle, ID: payload.ID, Placeholder: payload.Placeholder})
 	case valueKindDate:
 		payload := v.data.(Date)
 		return json.Marshal(struct {
@@ -952,6 +1058,27 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			OffsetSeconds int32     `json:"offset_seconds"`
 			Name          *string   `json:"name,omitempty"`
 		}{Kind: valueKindTimeZone, OffsetSeconds: payload.OffsetSeconds, Name: payload.Name})
+	case valueKindType:
+		payload := v.data.(Type)
+		return json.Marshal(struct {
+			Kind     ValueKind `json:"kind"`
+			Name     string    `json:"name"`
+			Instance bool      `json:"instance,omitempty"`
+		}{Kind: valueKindType, Name: payload.Name, Instance: payload.Instance})
+	case valueKindBuiltin:
+		payload := v.data.(BuiltinFunction)
+		return json.Marshal(struct {
+			Kind ValueKind `json:"kind"`
+			Name string    `json:"name"`
+		}{Kind: valueKindBuiltin, Name: payload.Name})
+	case valueKindFileHandle:
+		payload := v.data.(FileHandle)
+		return json.Marshal(struct {
+			Kind     ValueKind `json:"kind"`
+			Path     Path      `json:"path"`
+			Mode     string    `json:"mode"`
+			Position uint64    `json:"position"`
+		}{Kind: valueKindFileHandle, Path: payload.Path, Mode: payload.Mode, Position: payload.Position})
 	default:
 		return nil, fmt.Errorf("unsupported value kind %q", v.kind)
 	}
@@ -1108,12 +1235,13 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 		*v = ReprValue(payload.Value)
 	case valueKindCycle:
 		var payload struct {
+			ID          uint64 `json:"id"`
 			Placeholder string `json:"placeholder"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
-		*v = CycleValue(payload.Placeholder)
+		*v = CycleRefValue(Cycle{ID: payload.ID, Placeholder: payload.Placeholder})
 	case valueKindDate:
 		var payload Date
 		if err := json.Unmarshal(data, &payload); err != nil {
@@ -1138,6 +1266,24 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = TimeZoneValue(payload)
+	case valueKindType:
+		var payload Type
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = TypeValue(payload)
+	case valueKindBuiltin:
+		var payload BuiltinFunction
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = BuiltinFunctionValue(payload)
+	case valueKindFileHandle:
+		var payload FileHandle
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = FileHandleValue(payload)
 	default:
 		return fmt.Errorf("unknown value kind %q", envelope.Kind)
 	}
@@ -1162,6 +1308,15 @@ func (v Value) String() string {
 		return v.data.(Exception).Error()
 	case valueKindFunction:
 		return v.data.(Function).Name
+	case valueKindType:
+		return "<class '" + v.data.(Type).Name + "'>"
+	case valueKindBuiltin:
+		return "<built-in function " + v.data.(BuiltinFunction).Name + ">"
+	case valueKindFileHandle:
+		file := v.data.(FileHandle)
+		return fmt.Sprintf("<file name=%q mode=%q>", file.Path, file.Mode)
+	case valueKindCycle:
+		return v.data.(Cycle).Placeholder
 	case valueKindDate:
 		d := v.data.(Date)
 		return fmt.Sprintf("%04d-%02d-%02d", d.Year, d.Month, d.Day)
