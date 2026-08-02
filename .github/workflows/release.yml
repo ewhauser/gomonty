@@ -253,6 +253,7 @@ jobs:
 
       - name: Download, verify, load, and execute the published target
         env:
+          GOMONTY_CACHE_DIR: ${{ runner.temp }}/published-runtime-cache
           GOMONTY_TEST_PUBLIC_RELEASE: "1"
         run: go test -race -count=1 -run '^TestPublishedReleaseEndToEnd$' ./
 

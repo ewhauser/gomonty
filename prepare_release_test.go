@@ -100,7 +100,27 @@ func TestPublishedReleaseEndToEnd(t *testing.T) {
 	if os.Getenv("GOMONTY_TEST_PUBLIC_RELEASE") == "" {
 		t.Skip("set GOMONTY_TEST_PUBLIC_RELEASE=1 after publishing the immutable runtime release")
 	}
-	t.Setenv("GOMONTY_CACHE_DIR", t.TempDir())
+	cacheDir := os.Getenv("GOMONTY_CACHE_DIR")
+	if cacheDir == "" {
+		if runtime.GOOS != "windows" {
+			cacheDir = t.TempDir()
+		} else {
+			var err error
+			cacheDir, err = os.MkdirTemp("", "gomonty-public-release-*")
+			if err != nil {
+				t.Fatalf("create public release cache: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := os.RemoveAll(cacheDir); err != nil {
+					// The process-wide worker pool keeps its executable open on
+					// Windows until this test process exits. The surrounding runner
+					// owns and cleans its temporary directory after process exit.
+					t.Logf("defer public release cache cleanup until process exit: %v", err)
+				}
+			})
+		}
+	}
+	t.Setenv("GOMONTY_CACHE_DIR", cacheDir)
 	if _, err := New("40 + 2", CompileOptions{}); !errors.Is(err, ErrRuntimeNotPrepared) {
 		t.Fatalf("New before preparation error = %v, want ErrRuntimeNotPrepared", err)
 	}

@@ -2,7 +2,13 @@ name: verify
 
 on:
   pull_request: {}
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      public_release:
+        description: "Also verify the published runtime from a clean cache on all six targets"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -129,6 +135,13 @@ jobs:
           cd examples
           CGO_ENABLED=0 go run ./cmd/example
 
+      - name: Verify published release from a clean cache
+        if: github.event_name == 'workflow_dispatch' && inputs.public_release
+        env:
+          GOMONTY_CACHE_DIR: ${{ runner.temp }}/published-runtime-cache
+          GOMONTY_TEST_PUBLIC_RELEASE: "1"
+        run: go test -race -count=1 -run '^TestPublishedReleaseEndToEnd$' ./
+
   musl:
     name: native ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
@@ -188,4 +201,23 @@ jobs:
               /work/.musl-smoke/gomonty prepare build --source /work --json
               /work/.musl-smoke/gomonty.test -test.count=1
               /work/.musl-smoke/example
+            '
+
+      - name: Verify published release from a clean cache on musl
+        if: github.event_name == 'workflow_dispatch' && inputs.public_release
+        shell: bash
+        run: |
+          docker run --rm \
+            --platform "linux/${{ matrix.go_arch }}" \
+            -v "$PWD:/work" \
+            -w /work \
+            -e GOMONTY_CACHE_DIR=/tmp/gomonty-published-runtime \
+            -e GOMONTY_TEST_PUBLIC_RELEASE=1 \
+            "$MUSL_GO_IMAGE" \
+            sh -c '
+              set -eux
+              test "$(go env GOVERSION)" = go1.25.0
+              test "$(go env GOHOSTOS)" = linux
+              test "$(go env GOHOSTARCH)" = "${{ matrix.go_arch }}"
+              go test -race -count=1 -run "^TestPublishedReleaseEndToEnd$" ./
             '
