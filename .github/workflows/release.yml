@@ -51,18 +51,6 @@ jobs:
           git rev-parse HEAD > release-target-sha.txt
           printf 'sha=%s\n' "$(cat release-target-sha.txt)" >> "$GITHUB_OUTPUT"
 
-      - name: Require immutable releases before publication
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
-        run: |
-          test -n "$GH_TOKEN" || {
-            echo "native-runtime-release must define IMMUTABLE_RELEASES_READ_TOKEN with repository Administration(read) only" >&2
-            exit 1
-          }
-          enabled="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/immutable-releases" --jq .enabled)"
-          test "$enabled" = "true"
-
       - name: Validate retained build run
         shell: bash
         run: |

@@ -119,26 +119,18 @@ the publish workflow requires that commit to remain an ancestor of `main`.
 ## 3. Promote the Exact Bytes
 
 Enable release immutability in the repository's GitHub settings before the first
-runtime release. The workflow refuses to create a release when the setting is
-disabled.
-
-GitHub requires repository Administration(read) for that live setting endpoint,
-and the per-job `GITHUB_TOKEN` cannot be granted that permission. Create a
-fine-grained token scoped only to this repository with Administration(read) and
-store it as the `IMMUTABLE_RELEASES_READ_TOKEN` secret on the
-`native-runtime-release` environment. Do not grant it Contents(write), do not
-use a classic PAT, and rotate it independently of release publication. The
-workflow exposes it only to the preflight step; release creation continues to
-use the short-lived `GITHUB_TOKEN`.
+runtime release. Publication uses only the job's short-lived `GITHUB_TOKEN`.
+After publishing the draft, the workflow requires the resulting release to
+report `immutable: true` before it proceeds to public-download verification or
+allows the Go module to be tagged. It does not store a long-lived personal token
+solely to query the repository administration setting before publication.
 
 Also create a `native-runtime-release` GitHub Actions environment, restrict its
 deployment branches to protected `main`, and disable administrator bypass. When
 the repository has a distinct release reviewer, require that reviewer and
 prevent self-review. A solo-maintainer repository must not claim a
-separation-of-duties control it does not have; its mandatory read-only
-immutability credential remains the technical pre-publication guard. The
-publication job references the environment and also rejects dispatches whose
-workflow ref is not `main`.
+separation-of-duties control it does not have. The publication job references
+the environment and also rejects dispatches whose workflow ref is not `main`.
 
 After any release-preparation PR merges, publish from its recorded run:
 
