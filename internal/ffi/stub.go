@@ -2,7 +2,11 @@
 
 package ffi
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/ewhauser/gomonty/internal/runtimebundle"
+)
 
 const unavailableMessage = "monty native bindings are unavailable: this target is not supported; darwin/amd64 remains unsupported"
 
@@ -18,6 +22,7 @@ type Progress struct{}
 // Error is the unsupported-target stub for an FFI error handle.
 type Error struct {
 	message string
+	cause   error
 }
 
 // RunnerResult wraps runner construction or load results.
@@ -42,8 +47,11 @@ type OpResult struct {
 }
 
 func unavailableError() *Error {
-	return &Error{message: unavailableMessage}
+	return &Error{message: unavailableMessage, cause: runtimebundle.ErrUnsupported}
 }
+
+// Cause returns the unsupported-runtime sentinel for errors.Is checks.
+func (e *Error) Cause() error { return e.cause }
 
 // Close releases the stub runner handle.
 func (*Runner) Close() {}

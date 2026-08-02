@@ -1,368 +1,150 @@
-name: release
+name: publish-native-runtime
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version with a leading v, for example v0.0.9"
+      prep_run_id:
+        description: "Successful runtime-release-prep workflow run ID whose exact artifact will be promoted"
         required: true
         type: string
 
 permissions:
+  actions: read
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
-  group: release
+  group: publish-native-runtime
   cancel-in-progress: false
 
 jobs:
-  header-and-linux-amd64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate release inputs
-        shell: bash
-        run: |
-          test "${GITHUB_REF_NAME}" = "main"
-          version="${{ github.event.inputs.version }}"
-          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Install cbindgen
-        run: cargo install cbindgen --locked
-
-      - name: Build header and linux/amd64 native artifacts
-        shell: bash
-        run: |
-          PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-          export PYO3_PYTHON
-          scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
-
-      - name: Upload generated header
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffi-header
-          path: internal/ffi/include/monty_go_ffi.h
-
-      - name: Upload linux/amd64 native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffi-linux-amd64
-          path: internal/ffi/lib/linux_amd64/
-
-      - name: Upload Cargo.lock
-        uses: actions/upload-artifact@v4
-        with:
-          name: cargo-lock
-          path: Cargo.lock
-
-  native-artifacts:
-    name: build ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
-    needs: header-and-linux-amd64
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-arm64
-            runner: ubuntu-24.04-arm
-            rust_target: aarch64-unknown-linux-gnu
-            artifact_name: ffi-linux-arm64
-            artifact_path: internal/ffi/lib/linux_arm64/
-          - name: darwin-arm64
-            runner: macos-14
-            rust_target: aarch64-apple-darwin
-            artifact_name: ffi-darwin-arm64
-            artifact_path: internal/ffi/lib/darwin_arm64/
-          - name: windows-amd64
-            runner: windows-latest
-            rust_target: x86_64-pc-windows-msvc
-            artifact_name: ffi-windows-amd64
-            artifact_path: internal/ffi/lib/windows_amd64/
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Build native artifacts
-        shell: bash
-        run: |
-          PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-          export PYO3_PYTHON
-          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
-
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
-
-  musl-native-artifacts-amd64:
-    name: build linux-amd64-musl
-    runs-on: ubuntu-latest
-    needs: header-and-linux-amd64
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build native artifacts in musl container
-        shell: bash
-        run: |
-          docker run --rm \
-            -v "$PWD:/work" \
-            -w /work \
-            rust:1.95-alpine3.21 \
-            sh -c '
-              set -eux
-              apk add --no-cache bash build-base python3
-              host="$(rustc -vV | sed -n "s/^host: //p")"
-              test "$host" = "x86_64-unknown-linux-musl"
-              PYO3_PYTHON="$(command -v python3)"
-              export PYO3_PYTHON
-              export MONTY_GO_FFI_MUSL_NATIVE=1
-              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh x86_64-unknown-linux-musl
-            '
-
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffi-linux-amd64-musl
-          path: internal/ffi/lib/linux_amd64_musl/
-
-  musl-native-artifacts-arm64:
-    name: build linux-arm64-musl
-    runs-on: ubuntu-24.04-arm
-    needs: header-and-linux-amd64
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build native artifacts in musl container
-        shell: bash
-        run: |
-          docker run --rm \
-            -v "$PWD:/work" \
-            -w /work \
-            rust:1.95-alpine3.21 \
-            sh -c '
-              set -eux
-              apk add --no-cache bash build-base python3
-              host="$(rustc -vV | sed -n "s/^host: //p")"
-              test "$host" = "aarch64-unknown-linux-musl"
-              PYO3_PYTHON="$(command -v python3)"
-              export PYO3_PYTHON
-              export MONTY_GO_FFI_MUSL_NATIVE=1
-              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh aarch64-unknown-linux-musl
-            '
-
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffi-linux-arm64-musl
-          path: internal/ffi/lib/linux_arm64_musl/
-
   publish:
-    runs-on: ubuntu-latest
-    needs:
-      - header-and-linux-amd64
-      - native-artifacts
-      - musl-native-artifacts-amd64
-      - musl-native-artifacts-arm64
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: native-runtime-release
     env:
       GH_TOKEN: ${{ github.token }}
+      PREP_RUN_ID: ${{ inputs.prep_run_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: main
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            examples/go.sum
 
-      - name: Download header
-        uses: actions/download-artifact@v4
-        with:
-          name: ffi-header
-          path: .artifacts/ffi-header
-
-      - name: Download Cargo.lock
-        uses: actions/download-artifact@v4
-        with:
-          name: cargo-lock
-          path: .artifacts/cargo-lock
-
-      - name: Download native artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ffi-*
-          path: .artifacts
-
-      - name: Prepare release verification tree
+      - name: Require protected main
         shell: bash
         run: |
-          version="${{ github.event.inputs.version }}"
-          version_no_v="${version#v}"
+          test "$GITHUB_REF" = "refs/heads/main"
+          git rev-parse HEAD > release-target-sha.txt
 
-          git fetch --tags origin
-          previous_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
-          if git rev-parse --verify --quiet "refs/tags/$version" >/dev/null; then
-            echo "Tag $version already exists" >&2
+      - name: Validate retained build run
+        shell: bash
+        run: |
+          case "$PREP_RUN_ID" in
+            ''|*[!0-9]*)
+              echo "prep_run_id must contain only decimal digits" >&2
+              exit 1
+              ;;
+          esac
+          run_json="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/actions/runs/${PREP_RUN_ID}")"
+          test "$(jq -r .conclusion <<<"$run_json")" = "success"
+          test "$(jq -r .name <<<"$run_json")" = "runtime-release-prep"
+          run_sha="$(jq -r .head_sha <<<"$run_json")"
+          test -n "$run_sha"
+          git merge-base --is-ancestor "$run_sha" HEAD
+          printf '%s\n' "$run_sha" > expected-source-sha.txt
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: runtime-release-package
+          path: .release-package
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.prep_run_id }}
+
+      - name: Verify exact promotion package
+        shell: bash
+        run: |
+          cmp expected-source-sha.txt .release-package/source-sha.txt
+          test "$(cat .release-package/prep-run-id.txt)" = "$PREP_RUN_ID"
+          cmp internal/runtimebundle/manifests/current.json .release-package/current.json
+          go run ./internal/cmd/runtime-release verify \
+            --manifest .release-package/current.json \
+            --assets .release-package/assets
+          go test -race -count=1 ./internal/runtimebundle ./internal/ffi ./internal/cmd/runtime-release ./cmd/gomonty
+          git diff --check
+
+      - name: Require immutable releases before publication
+        shell: bash
+        run: |
+          enabled="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/immutable-releases" --jq .enabled)"
+          test "$enabled" = "true"
+
+      - name: Attest the promoted bytes
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            .release-package/assets/*.zip
+            .release-package/current.json
+
+      - name: Create draft release and upload exact assets
+        shell: bash
+        run: |
+          tag="$(sed -n 's/.*"release_tag": "\([^"]*\)".*/\1/p' .release-package/current.json)"
+          test -n "$tag"
+          target_sha="$(cat release-target-sha.txt)"
+          source_sha="$(cat expected-source-sha.txt)"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; release artifacts are never replaced." >&2
             exit 1
           fi
-          echo "PREVIOUS_TAG=$previous_tag" >> "$GITHUB_ENV"
+          gh release create "$tag" \
+            --draft \
+            --latest=false \
+            --target "$target_sha" \
+            --title "$tag" \
+            --notes "Verified native runtime built from $source_sha and promoted byte-for-byte at $target_sha from runtime-release-prep run $PREP_RUN_ID." \
+            .release-package/assets/*.zip \
+            .release-package/current.json
+          printf '%s\n' "$tag" > release-tag.txt
 
-          current_version="$(sed -n -E '0,/^version = "([^"]+)"/s//\1/p' Cargo.toml)"
-          if [ "$current_version" != "$version_no_v" ]; then
-            echo "Cargo.toml version is $current_version, expected $version_no_v on main." >&2
-            echo "Run release-prep.yml for $version, merge that PR, and retry release.yml." >&2
-            exit 1
-          fi
-
-          find internal/ffi/lib -type f \( -name '*.a' -o -name '*.lib' \) -delete
-
-          mkdir -p \
-            internal/ffi/include \
-            internal/ffi/lib/darwin_arm64 \
-            internal/ffi/lib/linux_amd64 \
-            internal/ffi/lib/linux_arm64 \
-            internal/ffi/lib/linux_amd64_musl \
-            internal/ffi/lib/linux_arm64_musl \
-            internal/ffi/lib/windows_amd64
-
-          cp .artifacts/ffi-header/monty_go_ffi.h internal/ffi/include/monty_go_ffi.h
-          cp .artifacts/cargo-lock/Cargo.lock Cargo.lock
-          cp .artifacts/ffi-linux-amd64/libmonty_go_ffi.so internal/ffi/lib/linux_amd64/libmonty_go_ffi.so
-          cp .artifacts/ffi-linux-amd64/gomonty-worker internal/ffi/lib/linux_amd64/gomonty-worker
-          cp .artifacts/ffi-linux-arm64/libmonty_go_ffi.so internal/ffi/lib/linux_arm64/libmonty_go_ffi.so
-          cp .artifacts/ffi-linux-arm64/gomonty-worker internal/ffi/lib/linux_arm64/gomonty-worker
-          cp .artifacts/ffi-linux-amd64-musl/libmonty_go_ffi.so internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so
-          cp .artifacts/ffi-linux-amd64-musl/gomonty-worker internal/ffi/lib/linux_amd64_musl/gomonty-worker
-          cp .artifacts/ffi-linux-arm64-musl/libmonty_go_ffi.so internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
-          cp .artifacts/ffi-linux-arm64-musl/gomonty-worker internal/ffi/lib/linux_arm64_musl/gomonty-worker
-          cp .artifacts/ffi-darwin-arm64/libmonty_go_ffi.dylib internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib
-          cp .artifacts/ffi-darwin-arm64/gomonty-worker internal/ffi/lib/darwin_arm64/gomonty-worker
-          cp .artifacts/ffi-windows-amd64/monty_go_ffi.dll internal/ffi/lib/windows_amd64/monty_go_ffi.dll
-          cp .artifacts/ffi-windows-amd64/gomonty-worker.exe internal/ffi/lib/windows_amd64/gomonty-worker.exe
-
-          sha256sum \
-            Cargo.lock \
-            internal/ffi/include/monty_go_ffi.h \
-            internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
-            internal/ffi/lib/darwin_arm64/gomonty-worker \
-            internal/ffi/lib/linux_amd64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_amd64/gomonty-worker \
-            internal/ffi/lib/linux_arm64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64/gomonty-worker \
-            internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_amd64_musl/gomonty-worker \
-            internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64_musl/gomonty-worker \
-            internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
-            internal/ffi/lib/windows_amd64/gomonty-worker.exe \
-            > internal/ffi/checksums.txt
-
-          if ! git diff --quiet -- Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt; then
-            echo "Checked-in release artifacts on main do not match freshly built outputs." >&2
-            echo "Run release-prep.yml for $version, merge that PR, and retry release.yml." >&2
-            git status --short -- Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
-            exit 1
-          fi
-
-      - name: Validate release tree
+      - name: Compare GitHub asset digests before publication
         shell: bash
         run: |
-          CGO_ENABLED=0 go test ./...
-          go vet ./...
-          (
-            cd examples
-            CGO_ENABLED=0 go run ./cmd/example
-          )
-
-      - name: Tag and push
-        shell: bash
-        run: |
-          version="${{ github.event.inputs.version }}"
-
-          git tag "$version"
-          git push origin "$version"
-
-      - name: Create GitHub release
-        shell: bash
-        run: |
-          version="${{ github.event.inputs.version }}"
-          notes_file="$(mktemp)"
-
-          mkdir -p .release-assets
-          tar -czf .release-assets/gomonty-darwin-arm64.tar.gz \
-            -C internal/ffi/lib/darwin_arm64 libmonty_go_ffi.dylib gomonty-worker
-          tar -czf .release-assets/gomonty-linux-amd64.tar.gz \
-            -C internal/ffi/lib/linux_amd64 libmonty_go_ffi.so gomonty-worker
-          tar -czf .release-assets/gomonty-linux-amd64-musl.tar.gz \
-            -C internal/ffi/lib/linux_amd64_musl libmonty_go_ffi.so gomonty-worker
-          tar -czf .release-assets/gomonty-linux-arm64.tar.gz \
-            -C internal/ffi/lib/linux_arm64 libmonty_go_ffi.so gomonty-worker
-          tar -czf .release-assets/gomonty-linux-arm64-musl.tar.gz \
-            -C internal/ffi/lib/linux_arm64_musl libmonty_go_ffi.so gomonty-worker
-          tar -czf .release-assets/gomonty-windows-amd64.tar.gz \
-            -C internal/ffi/lib/windows_amd64 monty_go_ffi.dll gomonty-worker.exe
-
-          {
-            echo "## Changes"
-            echo
-            if [ -n "${PREVIOUS_TAG:-}" ]; then
-              echo "Compare: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${version}"
-              echo
-              git log --reverse --format="- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))" "${PREVIOUS_TAG}..HEAD"
-            else
-              echo "Initial release."
-              echo
-              git log --reverse --format="- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))"
+          tag="$(cat release-tag.txt)"
+          release_id="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .id)"
+          assets_json="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --paginate)"
+          expected_count=0
+          for file in .release-package/assets/*.zip .release-package/current.json; do
+            expected_count=$((expected_count + 1))
+            name="$(basename "$file")"
+            expected="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            actual="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .digest' <<<"$assets_json")"
+            if [ "$actual" != "$expected" ]; then
+              echo "GitHub digest mismatch for $name: got $actual, expected $expected" >&2
+              exit 1
             fi
-          } > "$notes_file"
+          done
+          actual_count="$(jq length <<<"$assets_json")"
+          test "$actual_count" -eq "$expected_count"
 
-          gh release create "$version" \
-            --title "$version" \
-            --notes-file "$notes_file" \
-            .release-assets/gomonty-darwin-arm64.tar.gz \
-            .release-assets/gomonty-linux-amd64.tar.gz \
-            .release-assets/gomonty-linux-amd64-musl.tar.gz \
-            .release-assets/gomonty-linux-arm64.tar.gz \
-            .release-assets/gomonty-linux-arm64-musl.tar.gz \
-            .release-assets/gomonty-windows-amd64.tar.gz \
-            internal/ffi/checksums.txt
-
-      - name: Warm the Go module proxy
+      - name: Publish immutable release
         shell: bash
         run: |
-          version="${{ github.event.inputs.version }}"
-          GOPROXY=https://proxy.golang.org go list -m "github.com/${{ github.repository }}@$version"
+          tag="$(cat release-tag.txt)"
+          gh release edit "$tag" --draft=false --latest=false
+          immutable="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .immutable)"
+          test "$immutable" = "true"
+
+      - name: Verify public download from a clean cache
+        shell: bash
+        env:
+          GOMONTY_CACHE_DIR: ${{ runner.temp }}/published-runtime-cache
+        run: |
+          go run ./cmd/gomonty prepare download --json
+          cd examples
+          CGO_ENABLED=0 go run ./cmd/example

@@ -1,13 +1,11 @@
-# Bundled Shared Libraries
+# Native Build Staging
 
-This directory stores the prebuilt `monty_go_ffi` shared libraries embedded by
-the Go bindings.
+No native executable is tracked in this directory. Git and Go module ZIPs contain
+only reviewable source, the generated C header, and the versioned hash manifest.
 
-Only the runtime shared libraries are tracked here. Legacy static or import
-libraries are intentionally omitted because the Go bindings embed and load the
-platform shared library directly.
+Repository build and release workflows may temporarily write target output here:
 
-Expected layout:
+Expected temporary layout:
 
 - `darwin_arm64/libmonty_go_ffi.dylib`
 - `linux_amd64/libmonty_go_ffi.so`
@@ -16,10 +14,13 @@ Expected layout:
 - `linux_arm64_musl/libmonty_go_ffi.so`
 - `windows_amd64/monty_go_ffi.dll`
 
-Refresh a target artifact with:
+Build a target pair for development with:
 
 ```bash
 scripts/build-go-ffi.sh <target-triple>
 ```
 
-The generated C header lives in `internal/ffi/include/monty_go_ffi.h`.
+The output is ignored and must not be committed. Consumers use `gomonty prepare
+download` or `gomonty prepare build`; verified runtime files live under the user
+cache, not this source directory. The generated C header remains at
+`internal/ffi/include/monty_go_ffi.h`.

@@ -1,364 +1,279 @@
-name: release-prep
+name: runtime-release-prep
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version with a leading v, for example v0.0.9"
+      open_pr:
+        description: "Commit the generated manifest and open the release-prep PR (main only)"
         required: true
-        type: string
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
-  group: release-prep-${{ github.event.inputs.version }}
+  group: runtime-release-prep-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  RUST_TOOLCHAIN: 1.95.0
+
 jobs:
-  header-and-linux-amd64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate release inputs
-        shell: bash
-        run: |
-          test "${GITHUB_REF_NAME}" = "main"
-          version="${{ github.event.inputs.version }}"
-          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Install cbindgen
-        run: cargo install cbindgen --locked
-
-      - name: Build header and linux/amd64 native artifacts
-        shell: bash
-        run: |
-          PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-          export PYO3_PYTHON
-          scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
-
-      - name: Upload generated header
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffi-header
-          path: internal/ffi/include/monty_go_ffi.h
-
-      - name: Upload linux/amd64 native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffi-linux-amd64
-          path: internal/ffi/lib/linux_amd64/
-
-      - name: Upload Cargo.lock
-        uses: actions/upload-artifact@v4
-        with:
-          name: cargo-lock
-          path: Cargo.lock
-
-  native-artifacts:
+  native:
     name: build ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    needs: header-and-linux-amd64
     strategy:
       fail-fast: false
       matrix:
         include:
+          - name: linux-amd64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            directory: linux_amd64
+            refresh_header: true
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
-            artifact_name: ffi-linux-arm64
-            artifact_path: internal/ffi/lib/linux_arm64/
+            directory: linux_arm64
+            refresh_header: false
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
-            artifact_name: ffi-darwin-arm64
-            artifact_path: internal/ffi/lib/darwin_arm64/
+            directory: darwin_arm64
+            refresh_header: false
           - name: windows-amd64
-            runner: windows-latest
+            runner: windows-2025
             rust_target: x86_64-pc-windows-msvc
-            artifact_name: ffi-windows-amd64
-            artifact_path: internal/ffi/lib/windows_amd64/
+            directory: windows_amd64
+            refresh_header: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.rust_target }}"
+          rustup default "$RUST_TOOLCHAIN"
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - name: Install pinned header generator
+        if: matrix.refresh_header
+        run: cargo install cbindgen --version 0.29.4 --locked
 
-      - name: Build native artifacts
+      - name: Build native pair
         shell: bash
         run: |
           PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
           export PYO3_PYTHON
-          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+          if [ "${{ matrix.refresh_header }}" != "true" ]; then
+            export MONTY_GO_FFI_SKIP_HEADER=1
+          fi
+          scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
 
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
+          name: native-${{ matrix.directory }}
+          path: internal/ffi/lib/${{ matrix.directory }}/
+          if-no-files-found: error
+          retention-days: 90
 
-  musl-native-artifacts-amd64:
-    name: build linux-amd64-musl
-    runs-on: ubuntu-latest
-    needs: header-and-linux-amd64
+      - name: Upload generated source metadata
+        if: matrix.refresh_header
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-source-metadata
+          path: |
+            Cargo.lock
+            internal/ffi/include/monty_go_ffi.h
+          if-no-files-found: error
+          retention-days: 90
+
+  musl:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64-musl
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+            directory: linux_amd64_musl
+          - name: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+            directory: linux_arm64_musl
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Build native artifacts in musl container
+      - name: Build native pair in pinned musl image
         shell: bash
         run: |
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
-            rust:1.95-alpine3.21 \
+            rust@sha256:77d036177a4caf204bf23c6c68e1aa013a0d919fd40058eb27943295080fe869 \
             sh -c '
               set -eux
               apk add --no-cache bash build-base python3
-              host="$(rustc -vV | sed -n "s/^host: //p")"
-              test "$host" = "x86_64-unknown-linux-musl"
               PYO3_PYTHON="$(command -v python3)"
               export PYO3_PYTHON
               export MONTY_GO_FFI_MUSL_NATIVE=1
-              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh x86_64-unknown-linux-musl
+              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
             '
 
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ffi-linux-amd64-musl
-          path: internal/ffi/lib/linux_amd64_musl/
+          name: native-${{ matrix.directory }}
+          path: internal/ffi/lib/${{ matrix.directory }}/
+          if-no-files-found: error
+          retention-days: 90
 
-  musl-native-artifacts-arm64:
-    name: build linux-arm64-musl
-    runs-on: ubuntu-24.04-arm
-    needs: header-and-linux-amd64
+  assemble:
+    runs-on: ubuntu-24.04
+    needs: [native, musl]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Build native artifacts in musl container
-        shell: bash
-        run: |
-          docker run --rm \
-            -v "$PWD:/work" \
-            -w /work \
-            rust:1.95-alpine3.21 \
-            sh -c '
-              set -eux
-              apk add --no-cache bash build-base python3
-              host="$(rustc -vV | sed -n "s/^host: //p")"
-              test "$host" = "aarch64-unknown-linux-musl"
-              PYO3_PYTHON="$(command -v python3)"
-              export PYO3_PYTHON
-              export MONTY_GO_FFI_MUSL_NATIVE=1
-              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh aarch64-unknown-linux-musl
-            '
-
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffi-linux-arm64-musl
-          path: internal/ffi/lib/linux_arm64_musl/
-
-  open-pr:
-    runs-on: ubuntu-latest
-    needs:
-      - header-and-linux-amd64
-      - native-artifacts
-      - musl-native-artifacts-amd64
-      - musl-native-artifacts-arm64
-    steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          ref: main
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Require main before opening a PR
+        if: inputs.open_pr
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "main"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            examples/go.sum
 
-      - name: Download header
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: ffi-header
-          path: .artifacts/ffi-header
+          pattern: native-*
+          path: .downloaded
 
-      - name: Download Cargo.lock
-        uses: actions/download-artifact@v4
-        with:
-          name: cargo-lock
-          path: .artifacts/cargo-lock
-
-      - name: Download native artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ffi-*
-          path: .artifacts
-
-      - name: Prepare release tree
+      - name: Assemble exact build outputs
         shell: bash
         run: |
-          version="${{ github.event.inputs.version }}"
-          version_no_v="${version#v}"
+          mkdir -p \
+            .native/darwin_arm64 \
+            .native/linux_amd64 \
+            .native/linux_amd64_musl \
+            .native/linux_arm64 \
+            .native/linux_arm64_musl \
+            .native/windows_amd64
+          cp .downloaded/native-darwin_arm64/* .native/darwin_arm64/
+          cp .downloaded/native-linux_amd64/* .native/linux_amd64/
+          cp .downloaded/native-linux_amd64_musl/* .native/linux_amd64_musl/
+          cp .downloaded/native-linux_arm64/* .native/linux_arm64/
+          cp .downloaded/native-linux_arm64_musl/* .native/linux_arm64_musl/
+          cp .downloaded/native-windows_amd64/* .native/windows_amd64/
+          cp .downloaded/native-source-metadata/Cargo.lock Cargo.lock
+          cp .downloaded/native-source-metadata/internal/ffi/include/monty_go_ffi.h internal/ffi/include/monty_go_ffi.h
 
-          git fetch --tags origin
-          if git rev-parse --verify --quiet "refs/tags/$version" >/dev/null; then
-            echo "Tag $version already exists" >&2
+      - name: Generate reviewable manifest and deterministic assets
+        shell: bash
+        run: |
+          release_tag="$(sed -n 's/.*"release_tag": "\([^"]*\)".*/\1/p' internal/runtimebundle/manifests/current.json)"
+          test -n "$release_tag"
+          mkdir -p .release-package/assets
+          go run ./internal/cmd/runtime-release generate \
+            --source . \
+            --input .native \
+            --output .release-package/assets \
+            --manifest internal/runtimebundle/manifests/current.json \
+            --release-base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
+          cp internal/runtimebundle/manifests/current.json .release-package/current.json
+          printf '%s\n' "$GITHUB_SHA" > .release-package/source-sha.txt
+          printf '%s\n' "$GITHUB_RUN_ID" > .release-package/prep-run-id.txt
+          go run ./internal/cmd/runtime-release verify \
+            --manifest .release-package/current.json \
+            --assets .release-package/assets
+
+      - name: Exercise the exact release asset through the public download path
+        env:
+          GOMONTY_TEST_RELEASE_ASSET_DIR: .release-package/assets
+        run: go test -race -count=1 -run '^TestPreparedReleaseAssetEndToEnd$' ./
+
+      - name: Verify source-only repository gates
+        shell: bash
+        run: |
+          if git ls-files | grep -E '(^|/)(gomonty-worker(\.exe)?|[^/]+\.(so|dylib|dll|a|lib))$'; then
+            echo "Tracked native executable found." >&2
             exit 1
           fi
-
-          sed -i -E '0,/^version = "[^"]+"/s//version = "'"$version_no_v"'"/' Cargo.toml
-
-          find internal/ffi/lib -type f \( -name '*.a' -o -name '*.lib' \) -delete
-
-          mkdir -p \
-            internal/ffi/include \
-            internal/ffi/lib/darwin_arm64 \
-            internal/ffi/lib/linux_amd64 \
-            internal/ffi/lib/linux_arm64 \
-            internal/ffi/lib/linux_amd64_musl \
-            internal/ffi/lib/linux_arm64_musl \
-            internal/ffi/lib/windows_amd64
-
-          cp .artifacts/ffi-header/monty_go_ffi.h internal/ffi/include/monty_go_ffi.h
-          cp .artifacts/cargo-lock/Cargo.lock Cargo.lock
-          cp .artifacts/ffi-linux-amd64/libmonty_go_ffi.so internal/ffi/lib/linux_amd64/libmonty_go_ffi.so
-          cp .artifacts/ffi-linux-amd64/gomonty-worker internal/ffi/lib/linux_amd64/gomonty-worker
-          cp .artifacts/ffi-linux-arm64/libmonty_go_ffi.so internal/ffi/lib/linux_arm64/libmonty_go_ffi.so
-          cp .artifacts/ffi-linux-arm64/gomonty-worker internal/ffi/lib/linux_arm64/gomonty-worker
-          cp .artifacts/ffi-linux-amd64-musl/libmonty_go_ffi.so internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so
-          cp .artifacts/ffi-linux-amd64-musl/gomonty-worker internal/ffi/lib/linux_amd64_musl/gomonty-worker
-          cp .artifacts/ffi-linux-arm64-musl/libmonty_go_ffi.so internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
-          cp .artifacts/ffi-linux-arm64-musl/gomonty-worker internal/ffi/lib/linux_arm64_musl/gomonty-worker
-          cp .artifacts/ffi-darwin-arm64/libmonty_go_ffi.dylib internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib
-          cp .artifacts/ffi-darwin-arm64/gomonty-worker internal/ffi/lib/darwin_arm64/gomonty-worker
-          cp .artifacts/ffi-windows-amd64/monty_go_ffi.dll internal/ffi/lib/windows_amd64/monty_go_ffi.dll
-          cp .artifacts/ffi-windows-amd64/gomonty-worker.exe internal/ffi/lib/windows_amd64/gomonty-worker.exe
-
-          sha256sum \
-            Cargo.lock \
-            internal/ffi/include/monty_go_ffi.h \
-            internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
-            internal/ffi/lib/darwin_arm64/gomonty-worker \
-            internal/ffi/lib/linux_amd64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_amd64/gomonty-worker \
-            internal/ffi/lib/linux_arm64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64/gomonty-worker \
-            internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_amd64_musl/gomonty-worker \
-            internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64_musl/gomonty-worker \
-            internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
-            internal/ffi/lib/windows_amd64/gomonty-worker.exe \
-            > internal/ffi/checksums.txt
-
-      - name: Validate release tree
-        shell: bash
-        run: |
-          CGO_ENABLED=0 go test ./...
+          go test -race -count=1 ./internal/runtimebundle ./internal/ffi ./internal/cmd/runtime-release ./cmd/gomonty
           go vet ./...
-          (
-            cd examples
-            CGO_ENABLED=0 go run ./cmd/example
-          )
+          git diff --check
 
-      - name: Prepare branch metadata
+      - name: Attest exact runtime assets
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            .release-package/assets/*.zip
+            .release-package/current.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: release-package
+        with:
+          name: runtime-release-package
+          path: .release-package/
+          if-no-files-found: error
+          retention-days: 90
+
+  open-pr:
+    name: open release-prep PR
+    if: inputs.open_pr && github.ref == 'refs/heads/main'
+    needs: assemble
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: runtime-release-package
+          path: .release-package
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-source-metadata
+          path: .source-metadata
+
+      - name: Commit release manifest
         shell: bash
         run: |
-          version="${{ github.event.inputs.version }}"
-          branch="release-prep/$version"
-          echo "BRANCH_NAME=$branch" >> "$GITHUB_ENV"
-          echo "PR_TITLE=Release $version" >> "$GITHUB_ENV"
-
-      - name: Commit and push changes
-        shell: bash
-        run: |
-          if ! git status --short -- Cargo.toml Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt | grep -q .; then
-            echo "Release tree is already current on main; skipping PR creation."
-            echo "SKIP_PR=1" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
+          cp .release-package/current.json internal/runtimebundle/manifests/current.json
+          cp .source-metadata/Cargo.lock Cargo.lock
+          cp .source-metadata/internal/ffi/include/monty_go_ffi.h internal/ffi/include/monty_go_ffi.h
+          branch="runtime-release-prep/${GITHUB_RUN_ID}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$BRANCH_NAME"
-          git add Cargo.toml Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
-          git commit -m "Release ${{ github.event.inputs.version }}"
-          git push --set-upstream origin "$BRANCH_NAME"
-
-      - name: Open release-prep PR
-        if: env.SKIP_PR != '1'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const head = `${owner}:${process.env.BRANCH_NAME}`;
-            const base = context.payload.repository.default_branch;
-
-            const existing = await github.rest.pulls.list({
-              owner,
-              repo,
-              head,
-              base,
-              state: "open",
-            });
-
-            if (existing.data.length > 0) {
-              core.info(`PR already exists: ${existing.data[0].html_url}`);
-              return;
-            }
-
-            const version = context.payload.inputs.version;
-            const body = [
-              `This PR prepares ${version} for release.`,
-              "",
-              "Updated files:",
-              "- `Cargo.toml`",
-              "- `Cargo.lock`",
-              "- `internal/ffi/include/monty_go_ffi.h`",
-              "- `internal/ffi/lib/...` shared libraries and workers",
-              "- `internal/ffi/checksums.txt`",
-            ].join("\n");
-
-            const pr = await github.rest.pulls.create({
-              owner,
-              repo,
-              head,
-              base,
-              title: process.env.PR_TITLE,
-              body,
-            });
-
-            core.info(`Created PR: ${pr.data.html_url}`);
+          git switch -c "$branch"
+          git add Cargo.lock internal/ffi/include/monty_go_ffi.h internal/runtimebundle/manifests/current.json
+          if git diff --cached --quiet; then
+            echo "The runtime manifest and generated source files are already current; run ${GITHUB_RUN_ID} is ready for exact-byte promotion after review."
+            exit 0
+          fi
+          git commit -m "build: prepare verified native runtime release"
+          git push --set-upstream origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "build: prepare verified native runtime release" \
+            --body "Builds exact native runtime assets in workflow run ${GITHUB_RUN_ID}, commits only the reviewable hashes and generated source metadata, and leaves the binaries in the retained Actions artifact. After merge, publish those exact bytes with: make publish-runtime PREP_RUN_ID=${GITHUB_RUN_ID}"

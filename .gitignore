@@ -1,2 +1,4 @@
 /target/
+/internal/ffi/lib/*
+!/internal/ffi/lib/README.md
 .DS_Store

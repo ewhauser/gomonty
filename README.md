@@ -12,19 +12,20 @@ Documentation: https://pkg.go.dev/github.com/ewhauser/gomonty
 - Experimental.
 - Go module path: `github.com/ewhauser/gomonty`
 - Upstream runtime: Monty `v0.0.19` (`e347739909877f4fb03877e23dd092286fc7e659`)
-- Go bindings are cgo-free and use `purego` with a bundled shared library and
-  version-matched worker executable
+- Go bindings are cgo-free and use `purego` with an explicitly prepared shared
+  library and version-matched worker executable
 - Rust FFI crate: `crates/monty-go-ffi`
 - Protocol worker crate: `crates/gomonty-worker`
 - Upstream Monty source: pinned in the root [`Cargo.toml`](./Cargo.toml)
-- Native shared libraries and worker executables: checked into
-  `internal/ffi/lib/<target>`
+- Native executables are not stored in Git or in Go module ZIPs
+- Reviewable release hashes: `internal/runtimebundle/manifests/current.json`
 - Generated header: checked into `internal/ffi/include/monty_go_ffi.h`
 - Alpine/musl builds use a separate `musl` Go build tag and musl-specific shared libraries
 
-Tagged source trees must already contain both native artifacts required by the
-runtime loader. GitHub release assets are optional convenience copies, not the
-source of truth for Go module consumers.
+Installing the Go module does not execute or fetch native code. Before first
+use, the application owner explicitly chooses either a verified GitHub release
+download or a local build from the reviewed, digest-pinned Rust source. Normal
+calls such as `monty.New` never build or access the network.
 
 Monty code executes in a child process managed by Monty's worker pool. This
 provides crash isolation, process replacement, parent-side timeout enforcement,
@@ -39,66 +40,71 @@ layer.
 - `examples/`: standalone example module for local consumption examples
 - `crates/monty-go-ffi/`: Rust C ABI adapter over `monty-pool`
 - `crates/gomonty-worker/`: small version-matched Monty protocol child
+- `cmd/gomonty/`: explicit `prepare download` and `prepare build` command
+- `internal/runtimebundle/`: manifest, verification, cache, and release tooling
 - `scripts/build-go-ffi.sh <target-triple>`: builds one target's shared library
-  and worker into `internal/ffi/lib/...`
+  and worker for repository development and release automation
 
-## Build Notes
+## Prepare the Native Runtime
 
-The Go package is cgo-free. It uses `purego` to load a bundled shared library
-for the current target and starts the adjacent bundled `gomonty-worker`
-executable. The worker speaks the exact Monty v0.0.19 protocol expected by the
-FFI library; initialization fails fast if it cannot be spawned or negotiated.
-
-On first use, the loader extracts both artifacts to a content-addressed directory
-under `os.UserCacheDir()` with an `os.TempDir()` fallback, marks the worker
-executable on Unix, then initializes a process-wide elastic worker pool.
-
-Default Linux builds target the GNU/glibc shared libraries. Alpine and other musl-based Linux builds must opt into the musl family with the `musl` Go build tag.
-
-The `verify` workflow runs `CGO_ENABLED=0` Go tests on native Linux, macOS, and Windows runners. Musl shared libraries are build-verified rather than executed in CI.
-
-To build or refresh both native artifacts for the current host:
+Install the source-only module and preparation command at the same version:
 
 ```bash
-scripts/build-go-ffi.sh aarch64-apple-darwin
-CGO_ENABLED=0 go test ./...
+go get github.com/ewhauser/gomonty@vX.Y.Z
+go install github.com/ewhauser/gomonty/cmd/gomonty@vX.Y.Z
 ```
 
-Requirements:
-
-- Go 1.25+
-- Rust toolchain
-- Python available on `PATH`, or `PYO3_PYTHON` set explicitly
-- `cbindgen` only when regenerating `internal/ffi/include/monty_go_ffi.h`
-
-For repeat builds where the checked-in header does not need to change, set `MONTY_GO_FFI_SKIP_HEADER=1`.
-
-For Alpine or another musl-based Linux environment:
+Then choose one explicit preparation mode:
 
 ```bash
-scripts/build-go-ffi.sh x86_64-unknown-linux-musl
+# Download the exact target asset from the versioned GitHub release.
+gomonty prepare download
+
+# Or compile the digest-pinned Rust source with your local toolchain.
+gomonty prepare build
+```
+
+The same operation is available from Go:
+
+```go
+prepared, err := monty.Prepare(ctx, monty.PrepareOptions{
+	Mode: monty.PrepareDownload, // or monty.PrepareBuild
+})
+```
+
+`prepare download` requires HTTPS and verifies the archive SHA-256 before
+extracting it. It then verifies the size and SHA-256 of both the library and
+worker. `prepare build` verifies the complete native source digest before
+running the build script, then records the locally built files' hashes. This
+mode deliberately trusts the caller's local Rust, Python, linker, and SDK
+toolchain; local builds are not required to reproduce CI output byte-for-byte.
+
+Both modes use a cross-process lock and atomic staging. Before every `Dlopen` or
+worker initialization, the loader rechecks the receipt and hashes of both files.
+Missing, changed, extra, symlinked, or mismatched files fail closed with
+`ErrRuntimeNotPrepared` or `ErrRuntimeIntegrity`. The `GOMONTY_CACHE_DIR`
+environment variable selects an alternate cache root without disabling checks.
+
+The verification boundary protects against accidental corruption, wrong release
+assets, and unreviewed binary substitution in distribution. It is not code
+signing and does not defend against a privileged local attacker able to modify
+the application process or cache during use. Monty's subprocess boundary is
+also not an OS sandbox.
+
+Build preparation additionally requires the pinned Rust 1.95.0 toolchain and
+Python on `PATH` (or `PYO3_PYTHON`). Default Linux builds use GNU/glibc. Alpine
+and other musl consumers build and run with the `musl` Go tag. The standard
+`CARGO_TARGET_DIR` environment variable is respected when callers want to reuse
+or isolate Cargo's compilation cache:
+
+```bash
+gomonty prepare build
 go test -tags musl ./...
 ```
 
 ## Consumer Example
 
-For normal consumers, the intended path is to depend on a tagged version of this
-repo whose source tree already contains the native shared library and worker for
-the consumer's target platform.
-
-Add the module:
-
-```bash
-go get github.com/ewhauser/gomonty@latest
-```
-
-Or in `go.mod`:
-
-```go
-require github.com/ewhauser/gomonty vX.Y.Z
-```
-
-Then import and use it:
+After explicit preparation, import and use the library normally:
 
 ```go
 package main
@@ -128,26 +134,13 @@ func main() {
 }
 ```
 
-The same example lives in [`examples/cmd/example`](./examples/cmd/example). To run it from this repo checkout:
+The same example lives in [`examples/cmd/example`](./examples/cmd/example). To
+run it from this repository checkout:
 
 ```bash
+go run ./cmd/gomonty prepare build --source .
 cd examples
 CGO_ENABLED=0 go run ./cmd/example
-```
-
-If you are consuming a branch, local checkout, or unreleased commit instead of a
-prepared tag, you may need to build or refresh both native artifacts for your platform
-first:
-
-```bash
-scripts/build-go-ffi.sh aarch64-apple-darwin
-```
-
-For Alpine or musl-based Linux consumers, also add the `musl` build tag when
-building or testing your application:
-
-```bash
-go build -tags musl ./...
 ```
 
 ## Benchmarks
@@ -156,7 +149,7 @@ The Go benchmark suite mirrors the current upstream Monty benchmark cases so
 the two projects exercise the same scripts and expected outputs. The shared
 kitchen-sink workload is copied into [`testdata/bench_kitchen_sink.py`](./testdata/bench_kitchen_sink.py).
 
-With a host shared library built, run the local Go-only benchmarks with:
+With a native runtime prepared, run the local Go-only benchmarks with:
 
 ```bash
 CGO_ENABLED=0 go test -run '^$' -bench BenchmarkMonty -benchmem
@@ -224,7 +217,7 @@ CGO_ENABLED=0 go test -run '^$' -fuzz FuzzCompileAndRun -fuzztime=10s .
 CGO_ENABLED=0 go test -run '^$' -fuzz FuzzLoadRunner -fuzztime=10s .
 ```
 
-The native runner fuzzers require a supported host shared library and run with
+The native runner fuzzers require a prepared native runtime and run with
 `CGO_ENABLED=0`. `FuzzValueJSON` remains pure Go.
 
 ## Upstream Overrides
@@ -240,4 +233,5 @@ monty-types = { path = "../monty/crates/monty-types" }
 monty-type-checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
-See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the protected-branch release flow: `make release` opens the release-prep PR, then `make publish-release VERSION=vX.Y.Z` tags merged `main`, creates the GitHub release, and warms the Go module proxy.
+See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the
+exact-byte native runtime release flow.

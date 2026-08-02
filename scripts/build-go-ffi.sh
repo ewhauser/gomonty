@@ -7,6 +7,7 @@ HEADER_PATH="$ROOT_DIR/internal/ffi/include/monty_go_ffi.h"
 LIB_ROOT="$ROOT_DIR/internal/ffi/lib"
 TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 SKIP_HEADER="${MONTY_GO_FFI_SKIP_HEADER:-0}"
+OUTPUT_DIR="${GOMONTY_NATIVE_OUTPUT_DIR:-}"
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "cargo is required" >&2
@@ -112,10 +113,14 @@ if [[ "$target" == *-unknown-linux-musl ]]; then
   fi
 fi
 
+if [[ -n "$OUTPUT_DIR" ]]; then
+  lib_dir="$OUTPUT_DIR"
+fi
+
 mkdir -p "$lib_dir"
 
 echo "Building monty-go-ffi and gomonty-worker for $target"
-cargo build --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi -p gomonty-worker --release --target "$target"
+cargo build --locked --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi -p gomonty-worker --release --target "$target"
 
 if [[ "$SKIP_HEADER" != "1" ]]; then
   echo "Refreshing C header"

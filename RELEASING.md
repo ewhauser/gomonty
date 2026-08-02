@@ -1,9 +1,16 @@
 # Release Process
 
+GoMonty distributes reviewable Go and Rust source through Git and Go module
+tags. Native runtime pairs are distributed only as immutable GitHub release
+assets. They are never committed to Git or embedded in a Go module ZIP.
+
+Build and publication are separate: publication promotes the exact bytes that a
+named CI run already built, hashed, verified, and attested. It never rebuilds.
+
 ## Upstream Monty Pin
 
-`crates/monty-go-ffi` and `crates/gomonty-worker` build against upstream Monty
-through the pinned git dependencies in the root `Cargo.toml`:
+`crates/monty-go-ffi` and `crates/gomonty-worker` build against the pinned Monty
+git dependencies in `Cargo.toml`:
 
 - `monty`
 - `monty-pool`
@@ -12,134 +19,133 @@ through the pinned git dependencies in the root `Cargo.toml`:
 - `monty-type-checking`
 
 All five dependencies must use the same exact release commit because the FFI
-library and worker negotiate Monty's versioned subprocess protocol.
+library and worker negotiate Monty's versioned subprocess protocol. The Rust
+toolchain is pinned in `rust-toolchain.toml`; musl CI uses a Docker image by
+immutable digest.
 
-To bump the upstream dependency:
+When changing Monty or either native crate:
 
-1. Update the `rev` for all Monty dependencies in `Cargo.toml`.
-2. Refresh `Cargo.lock` with `cargo update`.
-3. Rebuild the host shared library and worker, then run local verification:
+1. Update all five Cargo revisions together and refresh `Cargo.lock`.
+2. Choose a new `runtime_version` and `release_tag` in
+   `internal/runtimebundle/manifests/current.json`. Never reuse a published tag.
+3. Update the Monty version, commit, and target asset names in that manifest.
+4. Generate candidate hashes, then prove the complete feature branch before
+   submitting it.
 
-```bash
-MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh aarch64-apple-darwin
-CGO_ENABLED=0 go test ./...
-```
+Local Cargo patches are acceptable during development but must be removed before
+calculating `native_source_sha256` or building release assets.
 
-If you want to develop against a local Monty checkout instead of the pinned git
-dependency, use a temporary Cargo patch:
+## 1. Prove a Feature Branch Without Publishing
 
-```toml
-[patch."https://github.com/pydantic/monty.git"]
-monty = { path = "../monty/crates/monty" }
-monty-pool = { path = "../monty/crates/monty-pool" }
-monty-proto = { path = "../monty/crates/monty-proto" }
-monty-types = { path = "../monty/crates/monty-types" }
-monty-type-checking = { path = "../monty/crates/monty-type-checking" }
-```
-
-## Release Workflow
-
-The release flow has two explicit steps.
-
-1. Prepare the release PR:
+Push the feature branch, then run:
 
 ```bash
-make release
+make runtime-release-check
 ```
 
-That target fetches tags from `origin`, computes the next patch release from the
-latest semver tag (for example `v0.0.13` -> `v0.0.14`), and dispatches the
-`release-prep` GitHub Actions workflow on `main`. If you need to override the
-version explicitly, use `make release VERSION=vX.Y.Z`. The workflow:
+This dispatches `runtime-release-prep` with `open_pr=false`. The workflow builds
+the shared library and worker on compatible builders for:
 
-- validates the requested version and ensures the tag does not already exist
-- rebuilds the tracked native artifact pairs (shared library plus worker) for:
-  - `darwin/arm64`
-  - `linux/amd64` (GNU/glibc)
-  - `linux/arm64` (GNU/glibc)
-  - `linux/amd64` (musl/Alpine)
-  - `linux/arm64` (musl/Alpine)
-  - `windows/amd64`
-- regenerates `internal/ffi/include/monty_go_ffi.h` exactly once
-- updates `Cargo.toml`, `Cargo.lock`, `internal/ffi/lib/...`, and `internal/ffi/checksums.txt`
-- reruns release validation on the assembled tree:
-  - `CGO_ENABLED=0 go test ./...`
-  - `go vet ./...`
-  - `cd examples && CGO_ENABLED=0 go run ./cmd/example`
-- commits the release tree to a `release-prep/vX.Y.Z` branch
-- opens a pull request back to `main`
+- `darwin/arm64`
+- `linux/amd64` GNU/glibc
+- `linux/arm64` GNU/glibc
+- `linux/amd64` musl
+- `linux/arm64` musl
+- `windows/amd64`
 
-After that PR merges, publish the release from the merged `main` commit:
+It then:
+
+- assembles deterministic ZIPs from those exact build outputs
+- calculates each archive's size and SHA-256
+- calculates the size and SHA-256 of both files inside every archive
+- calculates a deterministic digest of every reviewed native build input
+- verifies the archives through the production extractor and verifier
+- proves no native executable is tracked in Git
+- runs source-only Go race tests, vet, and `git diff --check`
+- creates provenance attestations for the exact ZIPs and manifest
+- retains one `runtime-release-package` Actions artifact containing those exact
+  bytes, the build run ID, and source commit
+
+Proof mode cannot push, open a PR, tag, or publish. Download the generated
+manifest from the retained artifact when the feature branch needs platform
+hashes that cannot be generated on one local host, and review its diff before
+committing it to the feature branch.
+
+## 2. Rebuild on Protected Main
+
+After the feature PR merges, dispatch the publication candidate from protected
+`main`:
 
 ```bash
-make publish-release VERSION=vX.Y.Z
+make runtime-release-pr
 ```
 
-That target dispatches the `release` GitHub Actions workflow on `main`. The
-workflow:
+Only `main` is allowed to use `open_pr=true`. The workflow repeats every build
+and verification step. If generated source metadata or hashes differ from
+merged `main`, it commits only these reviewable files to a release-preparation
+PR:
 
-- validates the requested version and ensures the tag does not already exist
-- rebuilds the release assets and verifies the checked-in release tree on `main`
-  already matches the fresh build outputs
-- reruns release validation on the assembled tree:
-  - `CGO_ENABLED=0 go test ./...`
-  - `go vet ./...`
-  - `cd examples && CGO_ENABLED=0 go run ./cmd/example`
-- tags the merged `main` commit
-- creates the GitHub release with target-specific native bundles and checksums, and
-  generates release notes from the exact git range since the previous tag
-- warms the Go module proxy with `go list -m`, which is the trigger `pkg.go.dev`
-  and the module mirror need
-
-This flow assumes GitHub Actions can push tags and create releases. It does not
-require Actions to bypass the repository rule that changes to `main` must land
-through a pull request.
-
-Current CI coverage:
-
-- native `CGO_ENABLED=0` Go tests on Linux, macOS, and Windows
-- build verification for musl Linux shared libraries and workers
-- `go vet ./...`
-- a smoke run of the standalone example module under `examples/`
-
-## Why The Native Artifacts Must Be Committed Before Tagging
-
-Go module consumers fetch the tagged source tree. They do not fetch GitHub
-release assets as part of `go get`.
-
-Because the current runtime loader embeds the checked-in shared library and
-worker under `internal/ffi/lib/<target>`, the tag itself must already contain
-both matching binaries and the header. Release assets are optional convenience
-copies only.
-
-## Manual Native Artifact Refresh
-
-If you need to refresh artifacts locally instead of using the workflow, build
-each supported target explicitly on a compatible host:
-
-```bash
-scripts/build-go-ffi.sh aarch64-apple-darwin
-scripts/build-go-ffi.sh aarch64-unknown-linux-gnu
-scripts/build-go-ffi.sh aarch64-unknown-linux-musl
-scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
-scripts/build-go-ffi.sh x86_64-unknown-linux-musl
-scripts/build-go-ffi.sh x86_64-pc-windows-msvc
-```
-
-Commit the updated files:
-
-- `Cargo.toml`
 - `Cargo.lock`
 - `internal/ffi/include/monty_go_ffi.h`
-- `internal/ffi/lib/...` shared libraries and workers only
-- `internal/ffi/checksums.txt`
+- `internal/runtimebundle/manifests/current.json`
 
-## Post-Release Verification
+Native executables remain in the retained Actions artifact. If the files are
+already identical, no PR is needed and the successful run itself is the
+publication candidate. In either case, record the workflow run ID. If a prep PR
+was opened, merge it without rewriting away the preparation run's source commit;
+the publish workflow requires that commit to remain an ancestor of `main`.
 
-After the publish workflow completes:
+## 3. Promote the Exact Bytes
 
-1. Verify the GitHub release exists for the requested tag.
-2. Verify the tagged package pages on `pkg.go.dev`, including package docs,
-   examples, and detected license metadata.
-3. If the publish workflow fails after pushing the tag, fix forward with a new
-   version rather than mutating an existing tag.
+Enable release immutability in the repository's GitHub settings before the first
+runtime release. The workflow refuses to create a release when the setting is
+disabled.
+
+Also create a `native-runtime-release` GitHub Actions environment, restrict its
+deployment branches to protected `main`, and require a human reviewer. The
+publication job references that environment and also rejects dispatches whose
+workflow ref is not `main`.
+
+After any release-preparation PR merges, publish from its recorded run:
+
+```bash
+make publish-runtime PREP_RUN_ID=1234567890
+```
+
+`publish-native-runtime`:
+
+- requires the named run to be a successful `runtime-release-prep` run
+- requires its source commit to be an ancestor of current protected `main`
+- downloads `runtime-release-package` from that exact run, never a latest run
+- requires its manifest to be byte-identical to merged `main`
+- re-verifies every archive and internal file hash
+- creates another provenance attestation for the promoted bytes
+- creates a draft release and uploads the retained files without rebuilding
+- compares GitHub's reported `sha256:` digest for every uploaded asset with the
+  local digest and rejects missing or extra assets
+- publishes only after every digest agrees
+- verifies that the resulting release reports `immutable: true`
+
+If publication fails while the release is a draft, inspect and delete that draft
+before a deliberate retry. Never replace a published asset, move its tag, or
+reuse its runtime version; fix forward with a new version.
+
+## Consumer Verification
+
+After publication, verify from a clean module and cache boundary:
+
+```bash
+go install github.com/ewhauser/gomonty/cmd/gomonty@vX.Y.Z
+gomonty prepare download
+```
+
+Run a fresh consumer that evaluates `40 + 2` and confirm that its worker PID
+differs from the host PID. Download preparation must request the exact tagged
+asset URL in the committed manifest and fail before `Dlopen` or worker startup
+when any archive, file, receipt, target, or version check differs.
+
+`prepare build` is a separate trust choice. It verifies the reviewed source
+digest before executing the build, then records and rechecks the local outputs.
+It trusts the user's local compiler, Python, linker, and SDK and does not require
+local bytes to reproduce hosted builder output byte-for-byte. Standard
+`CARGO_TARGET_DIR` is respected for an explicitly managed compilation cache.

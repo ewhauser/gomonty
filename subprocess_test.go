@@ -11,25 +11,63 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ewhauser/gomonty/internal/runtimebundle"
 )
 
 const missingWorkerHelperEnv = "GOMONTY_TEST_MISSING_WORKER"
 
-func TestMissingWorkerFailsFast(t *testing.T) {
+func TestMissingWorkerFailsBeforeNativeLoad(t *testing.T) {
 	if os.Getenv(missingWorkerHelperEnv) == "1" {
 		_, err := New("40 + 2", CompileOptions{})
-		if err == nil || !strings.Contains(err.Error(), "initialize Monty subprocess worker") {
-			t.Fatalf("New error = %v, want worker initialization failure", err)
+		if !errors.Is(err, ErrRuntimeIntegrity) || !strings.Contains(err.Error(), "integrity check failed") {
+			t.Fatalf("New error = %v, want fail-closed integrity error", err)
 		}
 		return
 	}
 
 	cacheDir := t.TempDir()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestMissingWorkerFailsFast$")
+	prepared, err := runtimebundle.Locate()
+	if err != nil {
+		t.Fatalf("Prepared: %v", err)
+	}
+	cacheRoot := prepared.Directory
+	for range 4 {
+		cacheRoot = filepath.Dir(cacheRoot)
+	}
+	relative, err := filepath.Rel(cacheRoot, prepared.Directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyDirectory := filepath.Join(cacheDir, relative)
+	if err := os.MkdirAll(copyDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(prepared.Directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == filepath.Base(prepared.WorkerPath) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(prepared.Directory, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(copyDirectory, entry.Name()), data, info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMissingWorkerFailsBeforeNativeLoad$")
 	cmd.Env = append(os.Environ(),
 		missingWorkerHelperEnv+"=1",
-		"GOMONTY_WORKER_PATH="+filepath.Join(cacheDir, "missing-worker"),
-		"GOMONTY_FFI_CACHE_DIR="+cacheDir,
+		"GOMONTY_CACHE_DIR="+cacheDir,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("helper failed: %v\n%s", err, output)

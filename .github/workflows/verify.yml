@@ -7,210 +7,145 @@ on:
 permissions:
   contents: read
 
-jobs:
-  go-pure:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+env:
+  RUST_TOOLCHAIN: 1.95.0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+jobs:
+  source-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
             examples/go.sum
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Build native artifacts
+      - name: Reject tracked native executables
         shell: bash
         run: |
-          PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-          export PYO3_PYTHON
-          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
+          if git ls-files | grep -E '(^|/)(gomonty-worker(\.exe)?|[^/]+\.(so|dylib|dll|a|lib))$'; then
+            echo "Native executables must be distributed as verified release assets, never tracked in Git." >&2
+            exit 1
+          fi
 
-      - name: Run CGO-disabled tests
-        env:
-          CGO_ENABLED: "0"
-        run: go test ./...
+      - name: Verify manifest and release tooling
+        run: go test -race -count=1 ./internal/runtimebundle ./internal/ffi ./internal/cmd/runtime-release ./cmd/gomonty
 
-      - name: Run go vet
-        run: go vet ./...
-
-      - name: Smoke test example module
-        shell: bash
+      - name: Verify the source-only module builds
         run: |
-          cd examples
-          CGO_ENABLED=0 go run ./cmd/example
+          go test -run '^$' ./...
+          go vet ./...
 
-  platform-verify:
-    name: verify ${{ matrix.name }}
+  native:
+    name: native ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: linux-amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
-            artifact_path: internal/ffi/lib/linux_amd64/
-            run_go_tests: true
-            build_only_note: ""
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
-            artifact_path: internal/ffi/lib/linux_arm64/
-            run_go_tests: true
-            build_only_note: ""
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
-            artifact_path: internal/ffi/lib/darwin_arm64/
-            run_go_tests: true
-            build_only_note: ""
           - name: windows-amd64
-            runner: windows-latest
+            runner: windows-2025
             rust_target: x86_64-pc-windows-msvc
-            artifact_path: internal/ffi/lib/windows_amd64/
-            run_go_tests: true
-            build_only_note: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
             examples/go.sum
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Build native artifacts
+      - name: Install pinned Rust toolchain
         shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.rust_target }}"
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Build and prepare reviewed native source
+        shell: bash
+        env:
+          GOMONTY_CACHE_DIR: ${{ runner.temp }}/gomonty-cache
         run: |
           PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
           export PYO3_PYTHON
-          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+          go run ./cmd/gomonty prepare build --source . --json
+          go run ./cmd/gomonty prepare build --source . --json
 
-      - name: Run Go tests
-        if: matrix.run_go_tests
+      - name: Run native tests
         env:
-          CGO_ENABLED: "0"
-        run: go test ./...
-
-      - name: Run single-worker snapshot recovery test
-        if: matrix.name == 'linux-amd64'
-        env:
-          CGO_ENABLED: "0"
-        run: taskset --cpu-list 0 go test -run '^TestReplSnapshotRestoresAndCancellationAbandonsFeed$' -count=10 ./...
-
-      - name: Run Go race tests
-        if: matrix.run_go_tests
+          GOMONTY_CACHE_DIR: ${{ runner.temp }}/gomonty-cache
         run: go test -race -count=1 ./...
 
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-${{ matrix.name }}
-          path: ${{ matrix.artifact_path }}
-          retention-days: 3
+      - name: Run single-worker snapshot recovery stress
+        if: matrix.name == 'linux-amd64'
+        env:
+          GOMONTY_CACHE_DIR: ${{ runner.temp }}/gomonty-cache
+        run: taskset --cpu-list 0 go test -run '^TestReplSnapshotRestoresAndCancellationAbandonsFeed$' -count=10 ./...
 
-      - name: Build-only verification note
-        if: ${{ !matrix.run_go_tests }}
-        run: echo "${{ matrix.build_only_note }}"
+      - name: Run example from a separate module
+        shell: bash
+        env:
+          GOMONTY_CACHE_DIR: ${{ runner.temp }}/gomonty-cache
+        run: |
+          cd examples
+          CGO_ENABLED=0 go run ./cmd/example
 
-  verify-musl-amd64:
-    name: verify linux-musl-amd64
-    runs-on: ubuntu-latest
+  musl:
+    name: build-only ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64-musl
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+            target_id: linux-amd64-musl
+          - name: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+            target_id: linux-arm64-musl
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Build native artifacts in musl container
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build native pair in pinned musl image
         shell: bash
         run: |
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
-            rust:1.95-alpine3.21 \
+            rust@sha256:77d036177a4caf204bf23c6c68e1aa013a0d919fd40058eb27943295080fe869 \
             sh -c '
               set -eux
               apk add --no-cache bash build-base python3
-              host="$(rustc -vV | sed -n "s/^host: //p")"
-              test "$host" = "x86_64-unknown-linux-musl"
               PYO3_PYTHON="$(command -v python3)"
               export PYO3_PYTHON
               export MONTY_GO_FFI_MUSL_NATIVE=1
-              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh x86_64-unknown-linux-musl
+              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
             '
 
-      - name: Build-only verification note
-        run: echo "Musl/Alpine shared libraries and workers are build-verified in a musl-native container; native Go tests are not run on this workflow."
-
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-linux-amd64-musl
-          path: internal/ffi/lib/linux_amd64_musl/
-          retention-days: 3
-
-  verify-musl-arm64:
-    name: verify linux-musl-arm64
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build native artifacts in musl container
-        shell: bash
-        run: |
-          docker run --rm \
-            -v "$PWD:/work" \
-            -w /work \
-            rust:1.95-alpine3.21 \
-            sh -c '
-              set -eux
-              apk add --no-cache bash build-base python3
-              host="$(rustc -vV | sed -n "s/^host: //p")"
-              test "$host" = "aarch64-unknown-linux-musl"
-              PYO3_PYTHON="$(command -v python3)"
-              export PYO3_PYTHON
-              export MONTY_GO_FFI_MUSL_NATIVE=1
-              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh aarch64-unknown-linux-musl
-            '
-
-      - name: Build-only verification note
-        run: echo "Musl/Alpine shared libraries and workers are build-verified in a musl-native container; native Go tests are not run on this workflow."
-
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-linux-arm64-musl
-          path: internal/ffi/lib/linux_arm64_musl/
-          retention-days: 3
+      - name: Verify build output hashes
+        run: go run ./internal/cmd/runtime-release verify-input --target "${{ matrix.target_id }}"

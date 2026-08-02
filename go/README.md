@@ -9,10 +9,10 @@
 
 ## Status
 
-This fork is currently experimental and pins Monty v0.0.19 exactly.
+This package is currently experimental and pins Monty v0.0.19 exactly.
 
-It uses `purego` to load a bundled native shared library and starts a bundled,
-version-matched Monty protocol worker. Python execution occurs in worker
+It uses `purego` to load an explicitly prepared native shared library and starts
+the verified, version-matched Monty protocol worker. Python execution occurs in worker
 subprocesses; a crashed worker is discarded and recoverable snapshots are
 restored in a replacement process. Subprocess isolation is not an OS security
 sandbox.
@@ -26,15 +26,15 @@ The code is wired for these targets:
 - `linux/arm64` with musl shared libraries when built with `-tags musl`
 - `windows/amd64`
 
-If either native artifact for your target is missing from the source tree,
-builds for that target will fail. If extraction, loading, spawning, or protocol
-negotiation fails at runtime, the package returns a synthetic "native bindings
-unavailable" error.
+Native executables are not stored in Git or the Go module. Before using runner
+or REPL APIs, explicitly run `gomonty prepare download`, `gomonty prepare build`,
+or call `monty.Prepare`. Missing or changed files fail closed before loading or
+spawning.
 
 ## Requirements
 
 - Go 1.25+
-- a repo/tag that includes the native shared library and worker for your target
+- an explicitly prepared native runtime for your target
 - `-tags musl` when building on Alpine or another musl-based Linux environment
 
 The bindings are cgo-free; consumers do not need a C toolchain, and builds work
@@ -43,7 +43,9 @@ with either value of `CGO_ENABLED`.
 ## Install
 
 ```bash
-go get github.com/ewhauser/gomonty@latest
+go get github.com/ewhauser/gomonty@vX.Y.Z
+go install github.com/ewhauser/gomonty/cmd/gomonty@vX.Y.Z
+gomonty prepare download
 ```
 
 Or in `go.mod`:

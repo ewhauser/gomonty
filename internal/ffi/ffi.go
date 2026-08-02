@@ -3,19 +3,14 @@
 package ffi
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+	"github.com/ewhauser/gomonty/internal/runtimebundle"
 )
 
 const unavailableMessagePrefix = "monty native bindings are unavailable"
@@ -49,9 +44,11 @@ type cOpResult struct {
 }
 
 type nativeAPI struct {
-	once    sync.Once
-	loadErr error
-	handle  uintptr
+	loadMu        sync.Mutex
+	loaded        bool
+	permanentFail bool
+	loadErr       error
+	handle        uintptr
 
 	bytesFree             func(ptr *byte, len uintptr)
 	runnerFree            func(runner *cRunner)
@@ -102,6 +99,7 @@ type Progress struct {
 type Error struct {
 	ptr     *cError
 	message string
+	cause   error
 }
 
 // RunnerResult wraps runner construction or load results.
@@ -126,43 +124,58 @@ type OpResult struct {
 }
 
 func ensureLoaded() error {
-	api.once.Do(func() {
-		libraryPath, err := extractEmbeddedLibrary(embeddedLibs, embeddedLibraryDir, embeddedLibraryFilename, libraryCacheRoot())
-		if err != nil {
-			api.loadErr = err
-			return
-		}
-		handle, err := loadLibrary(libraryPath)
-		if err != nil {
-			api.loadErr = fmt.Errorf("load %s from %s: %w", embeddedLibraryFilename, libraryPath, err)
-			return
-		}
-		api.handle = handle
-		if err := api.register(handle); err != nil {
-			api.loadErr = err
-			return
-		}
+	api.loadMu.Lock()
+	defer api.loadMu.Unlock()
+	if api.loaded {
+		return nil
+	}
+	if api.permanentFail {
+		return api.loadErr
+	}
+	prepared, handle, err := locateAndLoadRuntime(runtimebundle.Locate, loadLibrary)
+	if err != nil {
+		// Verification and opening happen before API state is mutated, so a
+		// caller may explicitly prepare or repair the runtime and retry.
+		api.loadErr = err
+		return err
+	}
+	if err := api.register(handle); err != nil {
+		api.loadErr = err
+		api.permanentFail = true
+		return err
+	}
 
-		workerPath := os.Getenv("GOMONTY_WORKER_PATH")
-		if workerPath == "" {
-			workerPath, err = extractEmbeddedLibrary(embeddedLibs, embeddedLibraryDir, embeddedWorkerFilename, libraryCacheRoot())
-			if err != nil {
-				api.loadErr = err
-				return
-			}
-		}
-		workerPathBytes := []byte(workerPath)
-		workerPathPtr, workerPathLen := byteArgs(workerPathBytes)
-		if ffiErr := api.runtimeInit(workerPathPtr, workerPathLen); ffiErr != nil {
-			wrapped := newError(ffiErr)
-			message := wrapped.Display("type-msg", false)
-			wrapped.Close()
-			api.loadErr = fmt.Errorf("initialize Monty subprocess worker %s: %s", workerPath, message)
-			return
-		}
-		runtime.KeepAlive(workerPathBytes)
-	})
-	return api.loadErr
+	workerPath := prepared.WorkerPath
+	workerPathBytes := []byte(workerPath)
+	workerPathPtr, workerPathLen := byteArgs(workerPathBytes)
+	if ffiErr := api.runtimeInit(workerPathPtr, workerPathLen); ffiErr != nil {
+		wrapped := newError(ffiErr)
+		message := wrapped.Display("type-msg", false)
+		wrapped.Close()
+		api.loadErr = fmt.Errorf("initialize Monty subprocess worker %s: %s", workerPath, message)
+		api.permanentFail = true
+		return api.loadErr
+	}
+	runtime.KeepAlive(workerPathBytes)
+	api.handle = handle
+	api.loaded = true
+	api.loadErr = nil
+	return nil
+}
+
+func locateAndLoadRuntime(
+	locate func() (runtimebundle.Result, error),
+	open func(string) (uintptr, error),
+) (runtimebundle.Result, uintptr, error) {
+	prepared, err := locate()
+	if err != nil {
+		return runtimebundle.Result{}, 0, err
+	}
+	handle, err := open(prepared.LibraryPath)
+	if err != nil {
+		return runtimebundle.Result{}, 0, fmt.Errorf("load verified native library %s: %w", prepared.LibraryPath, err)
+	}
+	return prepared, handle, nil
 }
 
 func (a *nativeAPI) register(handle uintptr) error {
@@ -214,69 +227,6 @@ func registerLibraryFunc(handle uintptr, name string, dst any) (err error) {
 	return nil
 }
 
-func extractEmbeddedLibrary(libs fs.FS, dir string, filename string, cacheRoot string) (string, error) {
-	fullPath := path.Join(dir, filename)
-	libraryBytes, err := fs.ReadFile(libs, fullPath)
-	if err != nil {
-		return "", fmt.Errorf("read embedded library %s: %w", fullPath, err)
-	}
-	digest := fmt.Sprintf("%x", sha256.Sum256(libraryBytes))
-	cacheDir := filepath.Join(cacheRoot, "gomonty", digest[:12])
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return "", fmt.Errorf("create cache dir %s: %w", cacheDir, err)
-	}
-	targetPath := filepath.Join(cacheDir, filename)
-	if existing, err := os.ReadFile(targetPath); err == nil {
-		if fmt.Sprintf("%x", sha256.Sum256(existing)) == digest {
-			return targetPath, nil
-		}
-	}
-
-	tempFile, err := os.CreateTemp(cacheDir, filename+".tmp-*")
-	if err != nil {
-		return "", fmt.Errorf("create temp cache file: %w", err)
-	}
-	tempPath := tempFile.Name()
-	if _, err := tempFile.Write(libraryBytes); err != nil {
-		tempFile.Close()
-		_ = os.Remove(tempPath)
-		return "", fmt.Errorf("write cached library: %w", err)
-	}
-	if err := tempFile.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return "", fmt.Errorf("close cached library: %w", err)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(tempPath, 0o755); err != nil {
-			_ = os.Remove(tempPath)
-			return "", fmt.Errorf("chmod cached library: %w", err)
-		}
-	}
-	if err := os.Rename(tempPath, targetPath); err != nil {
-		_ = os.Remove(tempPath)
-		if errors.Is(err, os.ErrExist) {
-			return targetPath, nil
-		}
-		if existing, readErr := os.ReadFile(targetPath); readErr == nil {
-			if fmt.Sprintf("%x", sha256.Sum256(existing)) == digest {
-				return targetPath, nil
-			}
-		}
-		return "", fmt.Errorf("move cached library into place: %w", err)
-	}
-	return targetPath, nil
-}
-
-func libraryCacheRoot() string {
-	if root := os.Getenv("GOMONTY_FFI_CACHE_DIR"); root != "" {
-		return root
-	}
-	if root, err := os.UserCacheDir(); err == nil && root != "" {
-		return root
-	}
-	return os.TempDir()
-}
-
 func unavailableMessage(err error) string {
 	if err == nil {
 		return unavailableMessagePrefix
@@ -285,7 +235,15 @@ func unavailableMessage(err error) string {
 }
 
 func unavailableError(err error) *Error {
-	return &Error{message: unavailableMessage(err)}
+	return &Error{message: unavailableMessage(err), cause: err}
+}
+
+// Cause returns the loader error underlying a synthetic unavailable error.
+func (e *Error) Cause() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 func syntheticErrorJSON(message string) []byte {
