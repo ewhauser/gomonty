@@ -95,13 +95,16 @@ jobs:
             .release-package/current.json
 
       - name: Create draft release and upload exact assets
+        id: create_release
         shell: bash
         run: |
           tag="$(sed -n 's/.*"release_tag": "\([^"]*\)".*/\1/p' .release-package/current.json)"
           test -n "$tag"
           target_sha="$(cat release-target-sha.txt)"
           source_sha="$(cat expected-source-sha.txt)"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          releases_json="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases?per_page=100")"
+          existing_id="$(jq -r --arg tag "$tag" '.[] | select(.tag_name == $tag) | .id' <<<"$releases_json")"
+          if gh release view "$tag" >/dev/null 2>&1 || [ -n "$existing_id" ]; then
             echo "Release $tag already exists; release artifacts are never replaced." >&2
             exit 1
           fi
@@ -113,13 +116,39 @@ jobs:
             --notes "Verified native runtime built from $source_sha and promoted byte-for-byte at $target_sha from runtime-release-prep run $PREP_RUN_ID." \
             .release-package/assets/*.zip \
             .release-package/current.json
+          # Draft releases are absent from the release-by-tag endpoint. Resolve
+          # the exact draft from the authenticated list before comparing assets.
+          release_id=""
+          for ((attempt = 1; attempt <= 30; attempt++)); do
+            releases_json="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases?per_page=100")"
+            matches="$(jq -c --arg tag "$tag" --arg target "$target_sha" \
+              '[.[] | select(.tag_name == $tag and .draft == true and .target_commitish == $target)]' \
+              <<<"$releases_json")"
+            match_count="$(jq length <<<"$matches")"
+            if [ "$match_count" -gt 1 ]; then
+              echo "Found multiple matching draft releases for $tag at $target_sha." >&2
+              exit 1
+            fi
+            if [ "$match_count" -eq 1 ]; then
+              release_id="$(jq -r '.[0].id' <<<"$matches")"
+              break
+            fi
+            if [ "$attempt" -lt 30 ]; then
+              sleep 2
+            fi
+          done
+          if [ -z "$release_id" ]; then
+            echo "Draft release $tag at $target_sha did not become visible." >&2
+            exit 1
+          fi
           printf '%s\n' "$tag" > release-tag.txt
+          printf 'id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
 
       - name: Compare GitHub asset digests before publication
         shell: bash
         run: |
-          tag="$(cat release-tag.txt)"
-          release_id="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .id)"
+          release_id="${{ steps.create_release.outputs.id }}"
+          test -n "$release_id"
           assets_json="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --paginate)"
           expected_count=0
           for file in .release-package/assets/*.zip .release-package/current.json; do
@@ -140,9 +169,35 @@ jobs:
         shell: bash
         run: |
           tag="$(cat release-tag.txt)"
-          gh release edit "$tag" --draft=false --latest=false
-          immutable="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .immutable)"
-          test "$immutable" = "true"
+          target_sha="$(cat release-target-sha.txt)"
+          release_id="${{ steps.create_release.outputs.id }}"
+          release_json="$(gh api \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false \
+            -f make_latest=false)"
+          test "$(jq -r .id <<<"$release_json")" = "$release_id"
+          test "$(jq -r .tag_name <<<"$release_json")" = "$tag"
+          test "$(jq -r .target_commitish <<<"$release_json")" = "$target_sha"
+          test "$(jq -r .draft <<<"$release_json")" = "false"
+          published=false
+          for ((attempt = 1; attempt <= 30; attempt++)); do
+            if published_json="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>/dev/null)"; then
+              if [ "$(jq -r .id <<<"$published_json")" = "$release_id" ] &&
+                [ "$(jq -r .immutable <<<"$published_json")" = "true" ]; then
+                published=true
+                break
+              fi
+            fi
+            if [ "$attempt" -lt 30 ]; then
+              sleep 2
+            fi
+          done
+          if [ "$published" != "true" ]; then
+            echo "Published release $tag did not become visible as immutable." >&2
+            exit 1
+          fi
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
 
       - name: Verify public download from a clean cache
@@ -150,7 +205,17 @@ jobs:
         env:
           GOMONTY_CACHE_DIR: ${{ runner.temp }}/published-runtime-cache
         run: |
-          go run ./cmd/gomonty prepare download --json
+          prepared=false
+          for ((attempt = 1; attempt <= 15; attempt++)); do
+            if go run ./cmd/gomonty prepare download --json; then
+              prepared=true
+              break
+            fi
+            if [ "$attempt" -lt 15 ]; then
+              sleep 2
+            fi
+          done
+          test "$prepared" = "true"
           cd examples
           CGO_ENABLED=0 go run ./cmd/example
 
