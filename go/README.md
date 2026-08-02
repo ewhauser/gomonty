@@ -1,11 +1,11 @@
 # Monty Go Bindings
 
-`github.com/regularkevvv/gomonty` exposes Monty as a Go package with:
+`github.com/ewhauser/gomonty` exposes Monty as a Go package with:
 
 - runner and REPL APIs
 - high-level host callback dispatch for external functions
 - low-level pause/resume snapshots
-- a typed OS/filesystem callback surface in `github.com/regularkevvv/gomonty/vfs`
+- a typed OS/filesystem callback surface in `github.com/ewhauser/gomonty/vfs`
 
 ## Status
 
@@ -43,13 +43,13 @@ with either value of `CGO_ENABLED`.
 ## Install
 
 ```bash
-go get github.com/regularkevvv/gomonty@latest
+go get github.com/ewhauser/gomonty@latest
 ```
 
 Or in `go.mod`:
 
 ```go
-require github.com/regularkevvv/gomonty vX.Y.Z
+require github.com/ewhauser/gomonty vX.Y.Z
 ```
 
 ## Quick Start
@@ -70,8 +70,8 @@ import (
 	"log"
 	"os"
 
-	monty "github.com/regularkevvv/gomonty"
-	"github.com/regularkevvv/gomonty/vfs"
+	monty "github.com/ewhauser/gomonty"
+	"github.com/ewhauser/gomonty/vfs"
 )
 
 func main() {

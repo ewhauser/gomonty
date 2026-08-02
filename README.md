@@ -1,17 +1,16 @@
 # gomonty
 
-`gomonty` is an experimental fork of
-[ewhauser/gomonty](https://github.com/ewhauser/gomonty) providing Go bindings to
+`gomonty` is an experimental standalone repository providing Go bindings to
 [Monty](https://github.com/pydantic/monty). The Go package keeps the compatible
 package name `monty`, while the Rust boundary is mapped to Monty's current
 subprocess architecture through pinned Cargo git dependencies.
 
-Documentation: https://pkg.go.dev/github.com/regularkevvv/gomonty
+Documentation: https://pkg.go.dev/github.com/ewhauser/gomonty
 
 ## Status
 
 - Experimental.
-- Go module path: `github.com/regularkevvv/gomonty`
+- Go module path: `github.com/ewhauser/gomonty`
 - Upstream runtime: Monty `v0.0.19` (`e347739909877f4fb03877e23dd092286fc7e659`)
 - Go bindings are cgo-free and use `purego` with a bundled shared library and
   version-matched worker executable
@@ -90,13 +89,13 @@ the consumer's target platform.
 Add the module:
 
 ```bash
-go get github.com/regularkevvv/gomonty@latest
+go get github.com/ewhauser/gomonty@latest
 ```
 
 Or in `go.mod`:
 
 ```go
-require github.com/regularkevvv/gomonty vX.Y.Z
+require github.com/ewhauser/gomonty vX.Y.Z
 ```
 
 Then import and use it:
@@ -109,7 +108,7 @@ import (
 	"fmt"
 	"log"
 
-	monty "github.com/regularkevvv/gomonty"
+	monty "github.com/ewhauser/gomonty"
 )
 
 func main() {

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/regularkevvv/gomonty/internal/ffi"
+	"github.com/ewhauser/gomonty/internal/ffi"
 )
 
 // Frame is a structured traceback frame returned by runtime and syntax errors.

@@ -1,4 +1,4 @@
-module github.com/regularkevvv/gomonty
+module github.com/ewhauser/gomonty
 
 go 1.25.0
 

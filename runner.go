@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/regularkevvv/gomonty/internal/ffi"
+	"github.com/ewhauser/gomonty/internal/ffi"
 )
 
 var (

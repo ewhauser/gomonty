@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	monty "github.com/regularkevvv/gomonty"
+	monty "github.com/ewhauser/gomonty"
 )
 
 func ExampleRunner_Run() {

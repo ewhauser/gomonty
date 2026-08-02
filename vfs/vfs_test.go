@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/regularkevvv/gomonty"
+	"github.com/ewhauser/gomonty"
 )
 
 type fixedClock struct{ value time.Time }

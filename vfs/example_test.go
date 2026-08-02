@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	monty "github.com/regularkevvv/gomonty"
-	"github.com/regularkevvv/gomonty/vfs"
+	monty "github.com/ewhauser/gomonty"
+	"github.com/ewhauser/gomonty/vfs"
 )
 
 func ExampleHandler() {

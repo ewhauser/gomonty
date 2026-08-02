@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/regularkevvv/gomonty"
+	"github.com/ewhauser/gomonty"
 )
 
 func TestLatestMontyOSCallsEndToEnd(t *testing.T) {
