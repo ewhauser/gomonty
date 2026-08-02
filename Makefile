@@ -3,8 +3,8 @@
 runtime-release-check:
 	@command -v gh >/dev/null 2>&1 || { echo "gh is required"; exit 1; }
 	@gh auth status >/dev/null
-	@gh workflow run release-prep.yml --ref "$$(git branch --show-current)" -f open_pr=false
-	@echo "Triggered a build-and-assemble proof without opening a PR."
+	@gh workflow run verify.yml --ref "$$(git branch --show-current)"
+	@echo "Triggered native verification and a build-and-assemble proof without opening a PR."
 
 runtime-release-pr:
 	@command -v gh >/dev/null 2>&1 || { echo "gh is required"; exit 1; }

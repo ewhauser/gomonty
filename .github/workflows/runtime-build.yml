@@ -1,0 +1,220 @@
+name: runtime-release-build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-release-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+
+jobs:
+  native:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            directory: linux_amd64
+            refresh_header: true
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            directory: linux_arm64
+            refresh_header: false
+          - name: darwin-arm64
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+            directory: darwin_arm64
+            refresh_header: false
+          - name: windows-amd64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            directory: windows_amd64
+            refresh_header: false
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.rust_target }}"
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Install pinned header generator
+        if: matrix.refresh_header
+        run: cargo install cbindgen --version 0.29.4 --locked
+
+      - name: Build native pair
+        shell: bash
+        run: |
+          PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          export PYO3_PYTHON
+          if [ "${{ matrix.refresh_header }}" != "true" ]; then
+            export MONTY_GO_FFI_SKIP_HEADER=1
+          fi
+          scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-${{ matrix.directory }}
+          path: internal/ffi/lib/${{ matrix.directory }}/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload generated source metadata
+        if: matrix.refresh_header
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-source-metadata
+          path: |
+            Cargo.lock
+            internal/ffi/include/monty_go_ffi.h
+          if-no-files-found: error
+          retention-days: 90
+
+  musl:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64-musl
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+            directory: linux_amd64_musl
+          - name: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+            directory: linux_arm64_musl
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build native pair in pinned musl image
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            rust@sha256:77d036177a4caf204bf23c6c68e1aa013a0d919fd40058eb27943295080fe869 \
+            sh -c '
+              set -eux
+              apk add --no-cache bash build-base python3
+              PYO3_PYTHON="$(command -v python3)"
+              export PYO3_PYTHON
+              export MONTY_GO_FFI_MUSL_NATIVE=1
+              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+            '
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-${{ matrix.directory }}
+          path: internal/ffi/lib/${{ matrix.directory }}/
+          if-no-files-found: error
+          retention-days: 90
+
+  assemble:
+    runs-on: ubuntu-24.04
+    needs: [native, musl]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: native-*
+          path: .downloaded
+
+      - name: Assemble exact build outputs
+        shell: bash
+        run: |
+          mkdir -p \
+            .native/darwin_arm64 \
+            .native/linux_amd64 \
+            .native/linux_amd64_musl \
+            .native/linux_arm64 \
+            .native/linux_arm64_musl \
+            .native/windows_amd64
+          cp .downloaded/native-darwin_arm64/* .native/darwin_arm64/
+          cp .downloaded/native-linux_amd64/* .native/linux_amd64/
+          cp .downloaded/native-linux_amd64_musl/* .native/linux_amd64_musl/
+          cp .downloaded/native-linux_arm64/* .native/linux_arm64/
+          cp .downloaded/native-linux_arm64_musl/* .native/linux_arm64_musl/
+          cp .downloaded/native-windows_amd64/* .native/windows_amd64/
+          cp .downloaded/native-source-metadata/Cargo.lock Cargo.lock
+          cp .downloaded/native-source-metadata/internal/ffi/include/monty_go_ffi.h internal/ffi/include/monty_go_ffi.h
+
+      - name: Generate reviewable manifest and deterministic assets
+        shell: bash
+        run: |
+          release_tag="$(sed -n 's/.*"release_tag": "\([^"]*\)".*/\1/p' internal/runtimebundle/manifests/current.json)"
+          test -n "$release_tag"
+          mkdir -p .release-package/assets
+          go run ./internal/cmd/runtime-release generate \
+            --source . \
+            --input .native \
+            --output .release-package/assets \
+            --manifest internal/runtimebundle/manifests/current.json \
+            --release-base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
+          cp internal/runtimebundle/manifests/current.json .release-package/current.json
+          printf '%s\n' "$GITHUB_SHA" > .release-package/source-sha.txt
+          printf '%s\n' "$GITHUB_RUN_ID" > .release-package/prep-run-id.txt
+          go run ./internal/cmd/runtime-release verify \
+            --manifest .release-package/current.json \
+            --assets .release-package/assets
+
+      - name: Exercise the exact release asset through the public download path
+        env:
+          GOMONTY_TEST_RELEASE_ASSET_DIR: .release-package/assets
+        run: go test -race -count=1 -run '^TestPreparedReleaseAssetEndToEnd$' ./
+
+      - name: Verify source-only repository gates
+        shell: bash
+        run: |
+          if git ls-files | grep -E '(^|/)(gomonty-worker(\.exe)?|[^/]+\.(so|dylib|dll|a|lib))$'; then
+            echo "Tracked native executable found." >&2
+            exit 1
+          fi
+          go test -race -count=1 ./internal/runtimebundle ./internal/ffi ./internal/cmd/runtime-release ./cmd/gomonty
+          go vet ./...
+          git diff --check
+
+      - name: Attest exact runtime assets
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            .release-package/assets/*.zip
+            .release-package/current.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: release-package
+        with:
+          name: runtime-release-package
+          path: .release-package/
+          if-no-files-found: error
+          retention-days: 90

@@ -43,8 +43,11 @@ Push the feature branch, then run:
 make runtime-release-check
 ```
 
-This dispatches `runtime-release-prep` with `open_pr=false`. The workflow builds
-the shared library and worker on compatible builders for:
+This dispatches the registered `verify` workflow on the feature branch. Manual
+verification calls the branch's read-only `runtime-release-build` reusable
+workflow, so new release automation can be tested before its dispatch wrapper
+exists on the default branch. It builds the shared library and worker on
+compatible builders for:
 
 - `darwin/arm64`
 - `linux/amd64` GNU/glibc
