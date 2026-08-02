@@ -4,6 +4,7 @@ on:
   workflow_call:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -136,6 +137,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [native, musl]
     permissions:
+      actions: read
       contents: read
       id-token: write
       attestations: write

@@ -17,6 +17,7 @@ jobs:
     name: release prep proof
     if: github.event_name == 'workflow_dispatch'
     permissions:
+      actions: read
       contents: read
       id-token: write
       attestations: write

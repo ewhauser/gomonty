@@ -29,6 +29,7 @@ jobs:
   build:
     needs: validate
     permissions:
+      actions: read
       contents: read
       id-token: write
       attestations: write
