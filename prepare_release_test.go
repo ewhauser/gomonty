@@ -9,18 +9,40 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
 	"github.com/ewhauser/gomonty/internal/runtimebundle"
 )
 
+const preparedReleaseHelper = "GOMONTY_TEST_PREPARED_RELEASE_HELPER"
+
 func TestPreparedReleaseAssetEndToEnd(t *testing.T) {
 	assetRoot := os.Getenv("GOMONTY_TEST_RELEASE_ASSET_DIR")
 	if assetRoot == "" {
 		t.Skip("set GOMONTY_TEST_RELEASE_ASSET_DIR to a generated release asset directory")
 	}
+	if runtime.GOOS == "windows" && os.Getenv(preparedReleaseHelper) == "" {
+		cacheDir := t.TempDir()
+		command := exec.Command(os.Args[0], "-test.run=^TestPreparedReleaseAssetEndToEnd$")
+		command.Env = append(os.Environ(),
+			preparedReleaseHelper+"=1",
+			"GOMONTY_CACHE_DIR="+cacheDir,
+		)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("release asset helper: %v\n%s", err, output)
+		}
+		return
+	}
+	cacheDir := os.Getenv("GOMONTY_CACHE_DIR")
+	if cacheDir == "" {
+		cacheDir = t.TempDir()
+	}
+	t.Setenv("GOMONTY_CACHE_DIR", cacheDir)
+
 	manifest, err := runtimebundle.CurrentManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +68,6 @@ func TestPreparedReleaseAssetEndToEnd(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("GOMONTY_CACHE_DIR", t.TempDir())
 	if _, err := New("40 + 2", CompileOptions{}); !errors.Is(err, ErrRuntimeNotPrepared) {
 		t.Fatalf("New before preparation error = %v, want ErrRuntimeNotPrepared", err)
 	}
