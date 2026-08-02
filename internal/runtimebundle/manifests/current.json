@@ -5,7 +5,7 @@
   "release_base_url": "https://github.com/ewhauser/gomonty/releases/download/runtime-monty-v0.0.19-1",
   "monty_version": "v0.0.19",
   "monty_commit": "e347739909877f4fb03877e23dd092286fc7e659",
-  "native_source_sha256": "580e2e1a043eb34fea7f0ce2ce4430fe4ff1f098442e07454adc33717be43604",
+  "native_source_sha256": "1cc0db833d67ea418147f13d05f2285b23988a1c22316769251d453ed7ffe98c",
   "targets": [
     {
       "id": "darwin-arm64",
